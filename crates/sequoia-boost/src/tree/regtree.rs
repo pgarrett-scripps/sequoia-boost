@@ -31,6 +31,19 @@ pub struct Node {
     pub sum_hess: f32,
     /// Loss reduction (gain) achieved by this node's split (0 for leaves).
     pub split_gain: f32,
+    /// Whether this internal node splits on a categorical feature by set
+    /// membership rather than a numeric threshold. `false` for numeric splits
+    /// and leaves.
+    #[serde(default)]
+    pub is_categorical: bool,
+    /// For a categorical node, the start index into the owning tree's category
+    /// list of the categories routed left. Unused (`0`) otherwise.
+    #[serde(default)]
+    pub cat_begin: u32,
+    /// For a categorical node, the end index (exclusive) into the owning tree's
+    /// category list of the categories routed left. Unused (`0`) otherwise.
+    #[serde(default)]
+    pub cat_end: u32,
 }
 
 impl Node {
@@ -45,6 +58,9 @@ impl Node {
             leaf_value: value,
             sum_hess,
             split_gain: 0.0,
+            is_categorical: false,
+            cat_begin: 0,
+            cat_end: 0,
         }
     }
 
@@ -59,6 +75,11 @@ impl Node {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct RegTree {
     nodes: Vec<Node>,
+    /// Flat pool of category values routed left by categorical nodes. Node
+    /// `n` (when `n.is_categorical`) owns `categories[n.cat_begin..n.cat_end]`.
+    /// Empty for trees with no categorical splits (including all legacy trees).
+    #[serde(default)]
+    categories: Vec<u32>,
 }
 
 impl RegTree {
@@ -66,6 +87,7 @@ impl RegTree {
     pub fn single_leaf(value: f32, sum_hess: f32) -> Self {
         RegTree {
             nodes: vec![Node::leaf(value, sum_hess)],
+            categories: Vec::new(),
         }
     }
 
@@ -74,6 +96,7 @@ impl RegTree {
     pub(crate) fn with_root(sum_hess: f32) -> Self {
         RegTree {
             nodes: vec![Node::leaf(0.0, sum_hess)],
+            categories: Vec::new(),
         }
     }
 
@@ -127,6 +150,41 @@ impl RegTree {
         (left_id, right_id)
     }
 
+    /// Turn leaf `nid` into a categorical (set-membership) internal node.
+    /// Instances whose value of `split_feature` is one of `cats_left` go to the
+    /// left child; all other (and missing) categories follow `default_left`
+    /// only when missing — present categories not in the set go right.
+    /// Returns `(left_id, right_id)`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn expand_categorical(
+        &mut self,
+        nid: usize,
+        split_feature: u32,
+        cats_left: &[u32],
+        default_left: bool,
+        left_value: f32,
+        left_hess: f32,
+        right_value: f32,
+        right_hess: f32,
+    ) -> (usize, usize) {
+        let left_id = self.nodes.len();
+        let right_id = left_id + 1;
+        self.nodes.push(Node::leaf(left_value, left_hess));
+        self.nodes.push(Node::leaf(right_value, right_hess));
+        let begin = self.categories.len() as u32;
+        self.categories.extend_from_slice(cats_left);
+        let end = self.categories.len() as u32;
+        let n = &mut self.nodes[nid];
+        n.split_feature = split_feature;
+        n.is_categorical = true;
+        n.cat_begin = begin;
+        n.cat_end = end;
+        n.default_left = default_left;
+        n.left = left_id as i32;
+        n.right = right_id as i32;
+        (left_id, right_id)
+    }
+
     /// Set a leaf's weight (used to finalize leaf values after growth).
     pub(crate) fn set_leaf_value(&mut self, nid: usize, value: f32) {
         self.nodes[nid].leaf_value = value;
@@ -159,9 +217,21 @@ impl RegTree {
             if node.is_leaf() {
                 return nid;
             }
-            let go_left = match get(node.split_feature) {
-                Some(v) => v < node.split_cond,
-                None => node.default_left,
+            let go_left = if node.is_categorical {
+                match get(node.split_feature) {
+                    // Categories are integer-coded; membership in the left set
+                    // routes left, everything else (present, not in set) right.
+                    Some(v) => {
+                        let c = v as u32;
+                        self.categories[node.cat_begin as usize..node.cat_end as usize].contains(&c)
+                    }
+                    None => node.default_left,
+                }
+            } else {
+                match get(node.split_feature) {
+                    Some(v) => v < node.split_cond,
+                    None => node.default_left,
+                }
             };
             nid = if go_left {
                 node.left as usize
@@ -206,6 +276,24 @@ mod tests {
         // missing -> default_left = true -> left leaf
         assert_eq!(t.leaf_id_with(|_| None), 1);
         assert_eq!(t.node(1).leaf_value, -1.0);
+    }
+
+    #[test]
+    fn routing_categorical_set_membership() {
+        // Categorical split: categories {0, 2} go left, everything else right.
+        let mut t = RegTree::with_root(10.0);
+        t.expand_categorical(0, 0, &[0, 2], false, -1.0, 5.0, 2.0, 5.0);
+        assert!(t.node(0).is_categorical);
+        // In-set categories route left (leaf 1, value -1.0).
+        assert_eq!(t.leaf_id_with(|_| Some(0.0)), 1);
+        assert_eq!(t.leaf_id_with(|_| Some(2.0)), 1);
+        // Out-of-set present categories route right (leaf 2, value 2.0).
+        assert_eq!(t.leaf_id_with(|_| Some(1.0)), 2);
+        assert_eq!(t.leaf_id_with(|_| Some(3.0)), 2);
+        // Unseen category also routes right (not in the left set).
+        assert_eq!(t.leaf_id_with(|_| Some(9.0)), 2);
+        // Missing follows default_left = false -> right.
+        assert_eq!(t.leaf_id_with(|_| None), 2);
     }
 
     #[test]

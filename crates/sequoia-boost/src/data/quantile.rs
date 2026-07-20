@@ -7,6 +7,7 @@
 //! feature's maximum guarantees the maximum value gets its own bin (no clamp
 //! collision), so bin index `0` may be empty — harmless and cheap.
 
+use crate::data::meta::FeatureType;
 use crate::data::DMatrix;
 use serde::{Deserialize, Serialize};
 
@@ -20,26 +21,43 @@ pub struct HistCuts {
     n_features: usize,
     /// Global bin/cut offsets, length `n_features + 1`.
     feature_offset: Vec<u32>,
-    /// Concatenated ascending cut values.
+    /// Concatenated ascending cut values. For a numeric feature these are split
+    /// thresholds; for a categorical feature they are the distinct category
+    /// values, one per bin (see `is_categorical`).
     cut_values: Vec<f32>,
+    /// Per-feature flag: `true` when the feature is categorical and its bins map
+    /// one category value each (no threshold semantics). Length `n_features`.
+    is_categorical: Vec<bool>,
 }
 
 impl HistCuts {
     /// Compute cuts from a dataset with at most `max_bin` bins per feature.
+    ///
+    /// Categorical features (per [`DMatrix::feature_types`]) are binned with one
+    /// bin per distinct category value; numeric features use quantile cut
+    /// thresholds exactly as before.
     pub fn from_dmatrix(data: &DMatrix, max_bin: usize) -> Self {
         let csc = data.to_csc();
         let n_features = csc.n_cols();
+        let ftypes = data.feature_types();
         let mut feature_offset = Vec::with_capacity(n_features + 1);
         feature_offset.push(0u32);
         let mut cut_values: Vec<f32> = Vec::new();
+        let mut is_categorical = vec![false; n_features];
 
         let mut scratch: Vec<f32> = Vec::new();
+        #[allow(clippy::needless_range_loop)]
         for f in 0..n_features {
             let (_, vals) = csc.column(f);
             scratch.clear();
             scratch.extend_from_slice(vals);
             scratch.sort_by(|a, b| a.partial_cmp(b).unwrap());
-            build_feature_cuts(&scratch, max_bin, &mut cut_values);
+            if ftypes.get(f).copied() == Some(FeatureType::Categorical) {
+                is_categorical[f] = true;
+                build_categorical_cuts(&scratch, &mut cut_values);
+            } else {
+                build_feature_cuts(&scratch, max_bin, &mut cut_values);
+            }
             feature_offset.push(cut_values.len() as u32);
         }
 
@@ -47,7 +65,14 @@ impl HistCuts {
             n_features,
             feature_offset,
             cut_values,
+            is_categorical,
         }
+    }
+
+    /// Whether feature `f` is categorical (bins map one category value each).
+    #[inline]
+    pub fn is_categorical(&self, f: usize) -> bool {
+        self.is_categorical[f]
     }
 
     /// Number of features.
@@ -89,10 +114,36 @@ impl HistCuts {
     pub fn bin_of(&self, f: usize, value: f32) -> u32 {
         let (start, end) = self.feature_bins(f);
         let slice = &self.cut_values[start..end];
+        if self.is_categorical[f] {
+            // Categorical: each bin holds one category value; find the exact
+            // bin. Unseen categories (absent at fit time) clamp to bin 0.
+            let local = slice
+                .binary_search_by(|c| c.partial_cmp(&value).unwrap())
+                .unwrap_or(0);
+            return start as u32 + local as u32;
+        }
         // upper_bound: first cut strictly greater than value.
         let local = slice.partition_point(|&c| c <= value);
         let local = local.min(slice.len().saturating_sub(1));
         start as u32 + local as u32
+    }
+}
+
+/// Append one bin per distinct category value (ascending) for a categorical
+/// feature. Unlike numeric cuts, no sentinel is added: the bin *is* the
+/// category.
+fn build_categorical_cuts(sorted_vals: &[f32], out: &mut Vec<f32>) {
+    if sorted_vals.is_empty() {
+        // No observed categories: a single degenerate bin keeps the layout
+        // well-formed; the feature can never split.
+        out.push(0.0);
+        return;
+    }
+    out.push(sorted_vals[0]);
+    for w in sorted_vals.windows(2) {
+        if w[0] != w[1] {
+            out.push(w[1]);
+        }
     }
 }
 

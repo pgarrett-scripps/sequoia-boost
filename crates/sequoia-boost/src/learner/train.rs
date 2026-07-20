@@ -1,6 +1,6 @@
 //! The gradient-boosting training loop.
 
-use crate::config::{GrowPolicy, TrainingParams, TreeMethod};
+use crate::config::{BoosterKind, GrowPolicy, TrainingParams, TreeMethod};
 use crate::data::ghist::GHistIndex;
 use crate::data::quantile::HistCuts;
 use crate::data::DMatrix;
@@ -211,43 +211,69 @@ fn train_impl(
     let mut best_iter = 0usize;
     let mut rounds_since_improve = 0usize;
 
+    let is_dart = params.booster == BoosterKind::Dart;
+
     for round in 0..num_boost_round {
-        // 1. Gradients from the current margins (all outputs at once).
-        objective.gradient(&train_margin, labels, weights, &mut gpair);
-
-        // 2. Row subsampling is shared across the round's per-output trees.
-        let mut rng =
-            StdRng::seed_from_u64(params.seed ^ (round as u64).wrapping_mul(0x9E37_79B9));
-        let row_subset = sample_rows(n, params.subsample, &mut rng);
-
-        // 3. One tree per output.
-        for k in 0..n_out {
-            // Gather this output's gradient slice.
-            let gk: &[GradPair] = if n_out == 1 {
-                &gpair
-            } else {
-                for r in 0..n {
-                    gpair_k[r] = gpair[r * n_out + k];
-                }
-                &gpair_k
-            };
-
-            let feature_subset = sample_features(n_features, params.colsample_bytree, &mut rng);
-            let mut tree = prepared.build_tree(params, dtrain, gk, &row_subset, &feature_subset);
-            tree.scale_leaves(params.eta as f32);
-
-            // Update cached margins for output k.
-            for row in 0..n {
-                train_margin[row * n_out + k] += tree.predict_row(dtrain, row);
-            }
+        if is_dart {
+            dart_round(
+                &mut model,
+                params,
+                dtrain,
+                &prepared,
+                objective.as_ref(),
+                labels,
+                weights,
+                n,
+                n_out,
+                n_features,
+                round,
+                &mut gpair,
+                &mut gpair_k,
+            );
+            // DART rescales earlier trees' weights each round, so the cached
+            // eval margins are no longer additive — recompute them from the
+            // (weighted) ensemble.
             for (ei, (d, _)) in evals.iter().enumerate() {
-                let em = &mut eval_margins[ei];
-                for row in 0..d.n_rows() {
-                    em[row * n_out + k] += tree.predict_row(d, row);
-                }
+                eval_margins[ei] = model.predict_margin_limited(d, 0);
             }
+        } else {
+            // 1. Gradients from the current margins (all outputs at once).
+            objective.gradient(&train_margin, labels, weights, &mut gpair);
 
-            model.push_tree(tree);
+            // 2. Row subsampling is shared across the round's per-output trees.
+            let mut rng =
+                StdRng::seed_from_u64(params.seed ^ (round as u64).wrapping_mul(0x9E37_79B9));
+            let row_subset = sample_rows(n, params.subsample, &mut rng);
+
+            // 3. One tree per output.
+            for k in 0..n_out {
+                // Gather this output's gradient slice.
+                let gk: &[GradPair] = if n_out == 1 {
+                    &gpair
+                } else {
+                    for r in 0..n {
+                        gpair_k[r] = gpair[r * n_out + k];
+                    }
+                    &gpair_k
+                };
+
+                let feature_subset = sample_features(n_features, params.colsample_bytree, &mut rng);
+                let mut tree = prepared.build_tree(params, dtrain, gk, &row_subset, &feature_subset);
+                tree.scale_leaves(params.eta as f32);
+
+                // Update cached margins for output k.
+                for row in 0..n {
+                    train_margin[row * n_out + k] += tree.predict_row(dtrain, row);
+                }
+                for (ei, (d, _)) in evals.iter().enumerate() {
+                    let em = &mut eval_margins[ei];
+                    for row in 0..d.n_rows() {
+                        em[row * n_out + k] += tree.predict_row(d, row);
+                    }
+                }
+
+                model.push_tree(tree);
+            }
         }
 
         // 4. Evaluate metrics on each eval set.
@@ -293,6 +319,83 @@ fn train_impl(
     }
 
     Ok(TrainResult { model, history })
+}
+
+/// Perform one DART (Dropout Additive Regression Trees) boosting round.
+///
+/// With probability `1 - skip_drop` a dropout set `D` is selected from the trees
+/// built so far (each dropped independently with probability `rate_drop`, at
+/// least one when any exist). The round's gradients are computed from the
+/// ensemble **excluding** `D`; the new per-output trees are then fit on those
+/// gradients. Using XGBoost's `tree` normalization, if `k = |D|` the new trees
+/// get weight `1/(k+1)` and each dropped tree is rescaled by `k/(k+1)`.
+#[allow(clippy::too_many_arguments)]
+fn dart_round(
+    model: &mut BoostedModel,
+    params: &TrainingParams,
+    dtrain: &DMatrix,
+    prepared: &Prepared,
+    objective: &dyn crate::objective::Objective,
+    labels: &[f32],
+    weights: Option<&[f32]>,
+    n: usize,
+    n_out: usize,
+    n_features: usize,
+    round: usize,
+    gpair: &mut [GradPair],
+    gpair_k: &mut [GradPair],
+) {
+    let mut rng =
+        StdRng::seed_from_u64(params.seed ^ (round as u64).wrapping_mul(0x9E37_79B9) ^ 0x0DA27);
+
+    // 1. Select the dropout set over the trees built so far.
+    let existing = model.num_trees();
+    let mut dropped = vec![false; existing];
+    let mut drop_indices: Vec<usize> = Vec::new();
+    let skip = rng.gen::<f64>() < params.skip_drop;
+    if !skip && existing > 0 {
+        for (i, d) in dropped.iter_mut().enumerate() {
+            if rng.gen::<f64>() < params.rate_drop {
+                *d = true;
+                drop_indices.push(i);
+            }
+        }
+        if drop_indices.is_empty() {
+            // Guarantee at least one dropped tree, as XGBoost does.
+            let i = rng.gen_range(0..existing);
+            dropped[i] = true;
+            drop_indices.push(i);
+        }
+    }
+    let k = drop_indices.len();
+
+    // 2. Gradients from the ensemble minus the dropout set.
+    let margin_excl = model.predict_margin_dropout(dtrain, &dropped);
+    objective.gradient(&margin_excl, labels, weights, gpair);
+
+    // 3. Fit one new tree per output on those gradients.
+    let row_subset = sample_rows(n, params.subsample, &mut rng);
+    let new_weight = 1.0 / (k as f32 + 1.0);
+    for kk in 0..n_out {
+        let gk: &[GradPair] = if n_out == 1 {
+            gpair
+        } else {
+            for r in 0..n {
+                gpair_k[r] = gpair[r * n_out + kk];
+            }
+            gpair_k
+        };
+        let feature_subset = sample_features(n_features, params.colsample_bytree, &mut rng);
+        let mut tree = prepared.build_tree(params, dtrain, gk, &row_subset, &feature_subset);
+        tree.scale_leaves(params.eta as f32);
+        model.push_tree_weighted(tree, new_weight);
+    }
+
+    // 4. Rescale the dropped trees so the ensemble stays balanced.
+    let factor = k as f32 / (k as f32 + 1.0);
+    for &i in &drop_indices {
+        model.scale_tree_weight(i, factor);
+    }
 }
 
 /// Bernoulli row subsampling (each row kept with probability `subsample`),
@@ -571,6 +674,115 @@ mod tests {
         for (a, b) in builtin.iter().zip(&custom) {
             assert!((a - b).abs() < 1e-5, "{a} vs {b}");
         }
+    }
+
+    #[test]
+    fn dart_trains_reduces_error_and_roundtrips() {
+        use crate::config::BoosterKind;
+        let d = step_dataset(120);
+        let params = TrainingParams::builder()
+            .objective("reg:squarederror")
+            .booster(BoosterKind::Dart)
+            .rate_drop(0.1)
+            .max_depth(3)
+            .eta(0.3)
+            .build()
+            .unwrap();
+        let model = train(&params, &d, 60).unwrap();
+        assert_eq!(model.num_trees(), 60);
+
+        // It should learn the step: RMSE well below a constant predictor.
+        let preds = model.predict(&d).unwrap();
+        let rmse = Rmse.eval(&preds, d.labels().unwrap(), None);
+        assert!(rmse < 0.1, "dart rmse too high: {rmse}");
+
+        // Native serde round-trip preserves predictions (weights included).
+        let bytes = model.to_bytes().unwrap();
+        let restored = BoostedModel::from_bytes(&bytes).unwrap();
+        let after = restored.predict(&d).unwrap();
+        for (a, b) in preds.iter().zip(&after) {
+            assert!((a - b).abs() < 1e-6, "roundtrip mismatch {a} vs {b}");
+        }
+
+        // JSON round-trip too.
+        let json = model.to_json().unwrap();
+        let rj = BoostedModel::from_json(&json).unwrap();
+        let aj = rj.predict(&d).unwrap();
+        for (a, b) in preds.iter().zip(&aj) {
+            assert!((a - b).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn gbtree_unchanged_by_weight_field() {
+        // A default gbtree model carries all-1.0 weights, so predictions must be
+        // bit-for-bit what the un-weighted sum produced historically.
+        let d = step_dataset(100);
+        let params = TrainingParams::builder()
+            .objective("reg:squarederror")
+            .max_depth(3)
+            .eta(0.3)
+            .build()
+            .unwrap();
+        let model = train(&params, &d, 40).unwrap();
+        // Compare weighted prediction against a manual unit-weight tree sum.
+        let preds = model.predict_margin(&d);
+        let n = d.n_rows();
+        let mut manual = vec![model.base_score(); n];
+        for tree in model.trees() {
+            for (row, m) in manual.iter_mut().enumerate() {
+                *m += tree.predict_row(&d, row);
+            }
+        }
+        for (a, b) in preds.iter().zip(&manual) {
+            assert_eq!(*a, *b, "gbtree weighting changed the sum");
+        }
+    }
+
+    #[test]
+    fn categorical_split_beats_numeric_on_non_ordinal_pattern() {
+        use crate::data::FeatureType;
+        // One feature, 4 categories. Label is a NON-ordinal function of the
+        // category: {0,2} -> 0, {1,3} -> 1. A single numeric `x < t` threshold
+        // cannot separate {0,2} from {1,3}; a categorical set-split can.
+        let cats = [0.0f32, 1.0, 2.0, 3.0];
+        let mut x = Vec::new();
+        let mut y = Vec::new();
+        for _ in 0..40 {
+            for &c in &cats {
+                x.push(c);
+                y.push(if (c as u32) % 2 == 1 { 1.0 } else { 0.0 });
+            }
+        }
+        let n = x.len();
+        let numeric = DMatrix::from_dense(&x, n, 1).unwrap().with_labels(&y).unwrap();
+        let categorical = numeric
+            .clone()
+            .with_feature_types(&[FeatureType::Categorical])
+            .unwrap();
+
+        // Depth-1 stumps: the numeric model can only threshold, the categorical
+        // model can partition the category set in a single node.
+        let mk = |d: &DMatrix| {
+            let p = TrainingParams::builder()
+                .objective("reg:squarederror")
+                .max_depth(1)
+                .eta(0.3)
+                .build()
+                .unwrap();
+            let m = train(&p, d, 40).unwrap();
+            Rmse.eval(&m.predict(d).unwrap(), d.labels().unwrap(), None)
+        };
+        let rmse_num = mk(&numeric);
+        let rmse_cat = mk(&categorical);
+
+        // Categorical nearly fits the pattern; numeric is left far behind.
+        assert!(rmse_cat < 0.02, "categorical rmse too high: {rmse_cat}");
+        assert!(rmse_num > 0.05, "numeric unexpectedly fit it: {rmse_num}");
+        assert!(
+            rmse_cat < rmse_num,
+            "categorical ({rmse_cat}) should beat numeric ({rmse_num})"
+        );
     }
 
     #[test]
