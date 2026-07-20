@@ -12,7 +12,7 @@ use crate::objective::GradPair;
 use crate::tree::constraints::{
     calc_weight_bounded, child_bounds, gain_at_weight, satisfies, Bounds, MonotoneConstraints,
 };
-use crate::tree::gain::{GradStats, RegParams};
+use crate::tree::gain::{calc_gain, GradStats, RegParams};
 use crate::tree::hist::{zeroed, CpuBackend, Histogram, HistogramBackend};
 use crate::tree::regtree::RegTree;
 use crate::tree::sampler::ColumnSampler;
@@ -377,8 +377,19 @@ impl<'a> HistTreeBuilder<'a> {
     ) -> BestSplit {
         let mut best = BestSplit::none();
         let mcw = self.reg.min_child_weight;
-        let parent_w = calc_weight_bounded(total, &self.reg, bounds);
-        let parent_gain = gain_at_weight(total, &self.reg, parent_w);
+        // When no monotone constraints are configured, the bounds are always
+        // infinite, so the cheap closed-form gain `Tα(G)²/(H+λ)` is exact and
+        // avoids the per-candidate weight/clamp arithmetic.
+        let constrained = self.cons.is_active();
+        let parent_gain = if constrained {
+            gain_at_weight(
+                total,
+                &self.reg,
+                calc_weight_bounded(total, &self.reg, bounds),
+            )
+        } else {
+            calc_gain(total, &self.reg)
+        };
 
         for &f in feature_subset {
             let (fs, fe) = cuts.feature_bins(f as usize);
@@ -396,6 +407,7 @@ impl<'a> HistTreeBuilder<'a> {
                     parent_gain,
                     bounds,
                     dir,
+                    constrained,
                     f,
                     fs,
                     fe,
@@ -409,6 +421,9 @@ impl<'a> HistTreeBuilder<'a> {
                 present.add(h);
             }
             let missing = total.sub(present);
+            // With no missing entries (e.g. dense data), the two missing
+            // directions produce identical splits, so evaluate only one.
+            let has_missing = missing.hess > 1e-6;
 
             let mut acc = GradStats::default();
             #[allow(clippy::needless_range_loop)]
@@ -422,15 +437,39 @@ impl<'a> HistTreeBuilder<'a> {
                 let la = acc;
                 let ra = total.sub(acc);
                 if la.hess >= mcw && ra.hess >= mcw {
-                    self.consider(&mut best, la, ra, parent_gain, bounds, dir, f, i, false);
+                    self.consider(
+                        &mut best,
+                        la,
+                        ra,
+                        parent_gain,
+                        bounds,
+                        dir,
+                        constrained,
+                        f,
+                        i,
+                        false,
+                    );
                 }
 
-                // Direction B: missing -> left. Left = present-so-far + missing.
-                let mut lb = acc;
-                lb.add(missing);
-                let rb = present.sub(acc);
-                if lb.hess >= mcw && rb.hess >= mcw {
-                    self.consider(&mut best, lb, rb, parent_gain, bounds, dir, f, i, true);
+                // Direction B: missing -> left. Only distinct when missing exists.
+                if has_missing {
+                    let mut lb = acc;
+                    lb.add(missing);
+                    let rb = present.sub(acc);
+                    if lb.hess >= mcw && rb.hess >= mcw {
+                        self.consider(
+                            &mut best,
+                            lb,
+                            rb,
+                            parent_gain,
+                            bounds,
+                            dir,
+                            constrained,
+                            f,
+                            i,
+                            true,
+                        );
+                    }
                 }
             }
         }
@@ -441,6 +480,7 @@ impl<'a> HistTreeBuilder<'a> {
     /// `best` if it improves.
     #[allow(clippy::too_many_arguments)]
     #[inline]
+    #[allow(clippy::too_many_arguments)]
     fn consider(
         &self,
         best: &mut BestSplit,
@@ -449,17 +489,31 @@ impl<'a> HistTreeBuilder<'a> {
         parent_gain: f64,
         bounds: Bounds,
         dir: i8,
+        constrained: bool,
         feature: u32,
         split_bin: usize,
         default_left: bool,
     ) {
-        let wl = calc_weight_bounded(left, &self.reg, bounds);
-        let wr = calc_weight_bounded(right, &self.reg, bounds);
-        if !satisfies(dir, wl, wr) {
-            return; // monotone constraint violated
-        }
-        let g = gain_at_weight(left, &self.reg, wl) + gain_at_weight(right, &self.reg, wr)
-            - parent_gain;
+        // Unconstrained: cheap closed-form gain, no weight/clamp arithmetic.
+        let (g, wl, wr) = if constrained {
+            let wl = calc_weight_bounded(left, &self.reg, bounds);
+            let wr = calc_weight_bounded(right, &self.reg, bounds);
+            if !satisfies(dir, wl, wr) {
+                return; // monotone constraint violated
+            }
+            (
+                gain_at_weight(left, &self.reg, wl) + gain_at_weight(right, &self.reg, wr)
+                    - parent_gain,
+                wl,
+                wr,
+            )
+        } else {
+            (
+                calc_gain(left, &self.reg) + calc_gain(right, &self.reg) - parent_gain,
+                0.0,
+                0.0,
+            )
+        };
         if g > best.loss_chg + K_RT_EPS {
             *best = BestSplit {
                 loss_chg: g,
@@ -494,6 +548,7 @@ impl<'a> HistTreeBuilder<'a> {
         parent_gain: f64,
         bounds: Bounds,
         dir: i8,
+        constrained: bool,
         feature: u32,
         fs: usize,
         fe: usize,
@@ -525,6 +580,7 @@ impl<'a> HistTreeBuilder<'a> {
                 parent_gain,
                 bounds,
                 dir,
+                constrained,
                 feature,
                 &cats_left,
             );
@@ -543,16 +599,29 @@ impl<'a> HistTreeBuilder<'a> {
         parent_gain: f64,
         bounds: Bounds,
         dir: i8,
+        constrained: bool,
         feature: u32,
         cats_left: &[u32],
     ) {
-        let wl = calc_weight_bounded(left, &self.reg, bounds);
-        let wr = calc_weight_bounded(right, &self.reg, bounds);
-        if !satisfies(dir, wl, wr) {
-            return; // monotone constraint violated
-        }
-        let g = gain_at_weight(left, &self.reg, wl) + gain_at_weight(right, &self.reg, wr)
-            - parent_gain;
+        let (g, wl, wr) = if constrained {
+            let wl = calc_weight_bounded(left, &self.reg, bounds);
+            let wr = calc_weight_bounded(right, &self.reg, bounds);
+            if !satisfies(dir, wl, wr) {
+                return; // monotone constraint violated
+            }
+            (
+                gain_at_weight(left, &self.reg, wl) + gain_at_weight(right, &self.reg, wr)
+                    - parent_gain,
+                wl,
+                wr,
+            )
+        } else {
+            (
+                calc_gain(left, &self.reg) + calc_gain(right, &self.reg) - parent_gain,
+                0.0,
+                0.0,
+            )
+        };
         if g > best.loss_chg + K_RT_EPS {
             *best = BestSplit {
                 loss_chg: g,
