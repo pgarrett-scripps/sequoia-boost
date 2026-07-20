@@ -52,20 +52,22 @@ fn main() -> Result<()> {
   `max_delta_step`, `max_depth`, `max_leaves`, `max_bin`.
 - **Objectives:** `reg:squarederror`, `reg:pseudohubererror`, `binary:logistic`,
   `multi:softmax`, `multi:softprob`, `count:poisson`, `reg:gamma`, `reg:tweedie`,
-  and a user **custom-objective hook**.
+  learning-to-rank (`rank:pairwise`, `rank:ndcg`, `rank:map`, LambdaMART), and a
+  user **custom-objective hook**.
 - **Metrics:** `rmse`, `mae`, `logloss`, `error`, `auc`, `mlogloss`, `merror`,
-  `poisson/gamma/tweedie-nloglik`.
-- **Modeling:** monotone constraints (hist), early stopping, feature importance
-  (weight / gain / cover / totals), leaf-index and margin prediction.
-- **Ecosystem:** libsvm & CSV loaders, native binary + JSON model I/O, k-fold
-  cross-validation, multi-core histogram construction.
+  `poisson/gamma/tweedie-nloglik`, `ndcg`, `map` (with `@k`).
+- **Boosters:** `gbtree` and **`dart`** (tree dropout).
+- **Modeling:** monotone constraints, **native categorical splits** (hist),
+  **TreeSHAP** exact contributions (`predict_contribs`), early stopping, feature
+  importance (weight / gain / cover / totals), leaf-index and margin prediction.
+- **Ecosystem:** libsvm & CSV loaders, native binary + JSON model I/O,
+  **XGBoost-format JSON model import/export**, k-fold cross-validation,
+  multi-core histogram construction.
 
 **In progress / planned**
 
-- Objectives: learning-to-rank (`rank:*`, LambdaMART).
-- `tree_method = approx`; categorical splits; interaction constraints; `dart` and
-  `gblinear` boosters; TreeSHAP contributions.
-- XGBoost-format (UBJSON/JSON) model import/export for drop-in compatibility.
+- `tree_method = approx`; interaction constraints; `gblinear` booster.
+- UBJSON (binary) XGBoost model format; categorical splits in the exact builder.
 - GPU histogram backend (the `HistogramBackend` trait is the seam for it).
 - Python (PyO3), CLI, and C-ABI wrappers.
 
