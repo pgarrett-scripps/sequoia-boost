@@ -10,12 +10,14 @@ mod classification;
 mod count;
 mod custom;
 mod multiclass;
+mod ranking;
 mod regression;
 
 pub use classification::LogisticObjective;
 pub use count::{GammaObjective, PoissonObjective, TweedieObjective};
 pub use custom::CustomObjective;
 pub use multiclass::SoftmaxObjective;
+pub use ranking::LambdaMartObjective;
 pub use regression::{PseudoHuberObjective, SquaredErrorObjective};
 
 use crate::config::TrainingParams;
@@ -66,6 +68,23 @@ pub trait Objective: Send + Sync {
         weights: Option<&[f32]>,
         out: &mut [GradPair],
     );
+
+    /// Compute gradients with optional query-group structure.
+    ///
+    /// Learning-to-rank objectives (LambdaMART) override this to form document
+    /// pairs *within* each group supplied by `group`. The default forwards to
+    /// [`Objective::gradient`], ignoring the grouping — correct for all
+    /// non-ranking objectives.
+    fn gradient_grouped(
+        &self,
+        preds: &[f32],
+        labels: &[f32],
+        weights: Option<&[f32]>,
+        _group: Option<&crate::data::GroupInfo>,
+        out: &mut [GradPair],
+    ) {
+        self.gradient(preds, labels, weights, out)
+    }
 
     /// Transform raw margins into reported predictions, in place. Default is the
     /// identity (used by squared-error regression).
@@ -134,6 +153,9 @@ pub fn create_objective(params: &TrainingParams) -> Result<Box<dyn Objective>> {
         "count:poisson" => Ok(Box::new(PoissonObjective::default())),
         "reg:gamma" => Ok(Box::new(GammaObjective)),
         "reg:tweedie" => Ok(Box::new(TweedieObjective::default())),
+        "rank:pairwise" => Ok(Box::new(LambdaMartObjective::pairwise())),
+        "rank:ndcg" => Ok(Box::new(LambdaMartObjective::ndcg())),
+        "rank:map" => Ok(Box::new(LambdaMartObjective::map())),
         other => Err(SequoiaError::unknown("objective", other)),
     }
 }

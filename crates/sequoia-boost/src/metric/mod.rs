@@ -18,6 +18,21 @@ pub trait Metric: Send + Sync {
 
     /// Evaluate the metric. `preds` are post-transform predictions.
     fn eval(&self, preds: &[f32], labels: &[f32], weights: Option<&[f32]>) -> f64;
+
+    /// Evaluate the metric with optional query-group structure.
+    ///
+    /// Ranking metrics (`ndcg`, `map`) override this to compute the metric per
+    /// query group and average across groups. The default ignores the grouping
+    /// and forwards to [`Metric::eval`] — correct for all pointwise metrics.
+    fn eval_grouped(
+        &self,
+        preds: &[f32],
+        labels: &[f32],
+        weights: Option<&[f32]>,
+        _group: Option<&crate::data::GroupInfo>,
+    ) -> f64 {
+        self.eval(preds, labels, weights)
+    }
 }
 
 /// Root-mean-square error (`rmse`).
@@ -333,6 +348,182 @@ impl Metric for TweedieNLogLik {
     }
 }
 
+/// Iterate `(start, end)` row ranges for a group, or a single whole-batch
+/// range when no group info is present. Shared by the ranking metrics.
+fn group_ranges(n: usize, group: Option<&crate::data::GroupInfo>) -> Vec<(usize, usize)> {
+    match group {
+        Some(g) if g.num_rows() == n => g.iter_ranges().collect(),
+        _ => vec![(0, n)],
+    }
+}
+
+/// Normalized Discounted Cumulative Gain (`ndcg`), averaged over query groups.
+///
+/// Gains are `2^rel - 1` with the standard `1 / log2(rank + 2)` discount.
+/// Supports XGBoost's `@k` truncation (e.g. `ndcg@5`). Higher is better.
+/// A group whose ideal DCG is zero contributes `0`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Ndcg {
+    /// Optional rank cutoff `k`; `None` uses the full list.
+    k: Option<usize>,
+}
+
+impl Ndcg {
+    /// Create an NDCG metric with an optional `@k` truncation.
+    pub fn new(k: Option<usize>) -> Self {
+        Ndcg { k }
+    }
+
+    /// NDCG of a single group given its predictions and labels.
+    fn group_ndcg(&self, preds: &[f32], labels: &[f32]) -> f64 {
+        let m = preds.len();
+        let cut = self.k.map_or(m, |k| k.min(m));
+
+        // DCG in prediction order.
+        let mut order: Vec<usize> = (0..m).collect();
+        order.sort_by(|&a, &b| preds[b].partial_cmp(&preds[a]).unwrap());
+        let dcg: f64 = order[..cut]
+            .iter()
+            .enumerate()
+            .map(|(p, &i)| ndcg_gain(labels[i] as f64) * ndcg_discount(p))
+            .sum();
+
+        // Ideal DCG: labels sorted by descending relevance.
+        let mut ideal: Vec<f64> = labels.iter().map(|&l| l as f64).collect();
+        ideal.sort_by(|a, b| b.partial_cmp(a).unwrap());
+        let idcg: f64 = ideal[..cut]
+            .iter()
+            .enumerate()
+            .map(|(p, &l)| ndcg_gain(l) * ndcg_discount(p))
+            .sum();
+
+        if idcg <= 0.0 {
+            0.0
+        } else {
+            dcg / idcg
+        }
+    }
+}
+
+impl Metric for Ndcg {
+    fn name(&self) -> &str {
+        "ndcg"
+    }
+
+    fn maximize(&self) -> bool {
+        true
+    }
+
+    fn eval(&self, preds: &[f32], labels: &[f32], weights: Option<&[f32]>) -> f64 {
+        // No group info: treat everything as a single query.
+        self.eval_grouped(preds, labels, weights, None)
+    }
+
+    fn eval_grouped(
+        &self,
+        preds: &[f32],
+        labels: &[f32],
+        _weights: Option<&[f32]>,
+        group: Option<&crate::data::GroupInfo>,
+    ) -> f64 {
+        let ranges = group_ranges(preds.len(), group);
+        if ranges.is_empty() {
+            return 0.0;
+        }
+        let sum: f64 = ranges
+            .iter()
+            .map(|&(s, e)| self.group_ndcg(&preds[s..e], &labels[s..e]))
+            .sum();
+        sum / ranges.len() as f64
+    }
+}
+
+/// NDCG gain of a relevance label: `2^rel - 1`.
+#[inline]
+fn ndcg_gain(rel: f64) -> f64 {
+    (2.0f64).powf(rel) - 1.0
+}
+
+/// NDCG position discount for 0-based rank `p`: `1 / log2(p + 2)`.
+#[inline]
+fn ndcg_discount(p: usize) -> f64 {
+    1.0 / ((p + 2) as f64).log2()
+}
+
+/// Mean Average Precision (`map`), averaged over query groups.
+///
+/// Relevance is binarized as `label > 0`. Supports `@k` truncation (e.g.
+/// `map@10`), which restricts the precision sum to the top-`k` ranks. Higher is
+/// better. A group with no relevant documents contributes `0`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MeanAveragePrecision {
+    /// Optional rank cutoff `k`; `None` uses the full list.
+    k: Option<usize>,
+}
+
+impl MeanAveragePrecision {
+    /// Create a MAP metric with an optional `@k` truncation.
+    pub fn new(k: Option<usize>) -> Self {
+        MeanAveragePrecision { k }
+    }
+
+    /// Average precision of a single group.
+    fn group_ap(&self, preds: &[f32], labels: &[f32]) -> f64 {
+        let m = preds.len();
+        let cut = self.k.map_or(m, |k| k.min(m));
+
+        let mut order: Vec<usize> = (0..m).collect();
+        order.sort_by(|&a, &b| preds[b].partial_cmp(&preds[a]).unwrap());
+
+        let num_rel = labels.iter().filter(|&&l| l > 0.0).count();
+        if num_rel == 0 {
+            return 0.0;
+        }
+
+        let mut hits = 0usize;
+        let mut ap = 0.0f64;
+        for (p, &i) in order[..cut].iter().enumerate() {
+            if labels[i] > 0.0 {
+                hits += 1;
+                ap += hits as f64 / (p + 1) as f64;
+            }
+        }
+        ap / num_rel as f64
+    }
+}
+
+impl Metric for MeanAveragePrecision {
+    fn name(&self) -> &str {
+        "map"
+    }
+
+    fn maximize(&self) -> bool {
+        true
+    }
+
+    fn eval(&self, preds: &[f32], labels: &[f32], weights: Option<&[f32]>) -> f64 {
+        self.eval_grouped(preds, labels, weights, None)
+    }
+
+    fn eval_grouped(
+        &self,
+        preds: &[f32],
+        labels: &[f32],
+        _weights: Option<&[f32]>,
+        group: Option<&crate::data::GroupInfo>,
+    ) -> f64 {
+        let ranges = group_ranges(preds.len(), group);
+        if ranges.is_empty() {
+            return 0.0;
+        }
+        let sum: f64 = ranges
+            .iter()
+            .map(|&(s, e)| self.group_ap(&preds[s..e], &labels[s..e]))
+            .sum();
+        sum / ranges.len() as f64
+    }
+}
+
 /// Resolve a metric by name. `num_class` is used by multiclass metrics.
 pub fn create_metric(name: &str, num_class: usize) -> Result<Box<dyn Metric>> {
     // Accept the XGBoost `tweedie-nloglik@1.5` suffix form.
@@ -357,6 +548,8 @@ pub fn create_metric(name: &str, num_class: usize) -> Result<Box<dyn Metric>> {
         "tweedie-nloglik" => Ok(Box::new(TweedieNLogLik {
             rho: rho.unwrap_or(1.5),
         })),
+        "ndcg" => Ok(Box::new(Ndcg::new(rho.map(|r| r as usize)))),
+        "map" => Ok(Box::new(MeanAveragePrecision::new(rho.map(|r| r as usize)))),
         other => Err(SequoiaError::unknown("metric", other)),
     }
 }
@@ -427,6 +620,74 @@ mod tests {
         let auc = m.eval(&[0.1, 0.2, 0.8, 0.9], &[0.0, 0.0, 1.0, 1.0], None);
         assert!((auc - 1.0).abs() < 1e-9);
         assert!(m.maximize());
+    }
+
+    #[test]
+    fn ndcg_perfect_and_reversed() {
+        use crate::data::GroupInfo;
+        let m = Ndcg::new(None);
+        let labels = [3.0f32, 2.0, 0.0];
+        // Predictions rank docs in ideal order -> NDCG 1.
+        let perfect = [0.9f32, 0.5, 0.1];
+        let g = GroupInfo::from_sizes(&[3]);
+        assert_relative_eq!(
+            m.eval_grouped(&perfect, &labels, None, Some(&g)),
+            1.0,
+            epsilon = 1e-6
+        );
+        // Reversed order: gains 0,3,7 at discounts 1, 1/log2(3), 1/2.
+        // DCG = 3/log2(3) + 7/2 = 5.39278; IDCG = 7 + 3/log2(3) = 8.89278.
+        let reversed = [0.1f32, 0.5, 0.9];
+        let got = m.eval_grouped(&reversed, &labels, None, Some(&g));
+        assert_relative_eq!(got, 5.392789 / 8.892789, epsilon = 1e-5);
+        assert!(m.maximize());
+    }
+
+    #[test]
+    fn ndcg_truncation_at_k() {
+        // With @1 only the top-ranked doc counts.
+        let m = Ndcg::new(Some(1));
+        let labels = [3.0f32, 2.0, 0.0];
+        // Best doc on top -> DCG=IDCG -> 1.
+        assert_relative_eq!(m.eval(&[0.9, 0.5, 0.1], &labels, None), 1.0, epsilon = 1e-6);
+        // Worst doc on top -> DCG 0 -> NDCG 0.
+        assert_relative_eq!(m.eval(&[0.1, 0.5, 0.9], &labels, None), 0.0, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn map_hand_computed() {
+        let m = MeanAveragePrecision::new(None);
+        let labels = [1.0f32, 0.0, 1.0, 0.0]; // 2 relevant docs
+        // Order both relevant docs first -> AP = (1/1 + 2/2)/2 = 1.
+        assert_relative_eq!(m.eval(&[0.9, 0.1, 0.8, 0.2], &labels, None), 1.0, epsilon = 1e-9);
+        // Relevant docs at ranks 2 and 4 -> AP = (1/2 + 2/4)/2 = 0.5.
+        assert_relative_eq!(m.eval(&[0.8, 0.9, 0.1, 0.7], &labels, None), 0.5, epsilon = 1e-9);
+        assert!(m.maximize());
+    }
+
+    #[test]
+    fn ranking_metrics_average_over_groups() {
+        use crate::data::GroupInfo;
+        // Two groups: one perfectly ranked (MAP 1), one poorly (MAP 0.5).
+        let labels = [1.0f32, 0.0, 1.0, 0.0];
+        let preds = [0.9f32, 0.1, 0.2, 0.8]; // g0 perfect, g1 relevant last
+        let g = GroupInfo::from_sizes(&[2, 2]);
+        let m = MeanAveragePrecision::new(None);
+        // g0: relevant on top -> AP 1. g1: relevant doc (idx2) ranked below -> AP 0.5.
+        assert_relative_eq!(
+            m.eval_grouped(&preds, &labels, None, Some(&g)),
+            0.75,
+            epsilon = 1e-9
+        );
+    }
+
+    #[test]
+    fn factory_parses_ranking_metrics_with_k() {
+        assert_eq!(create_metric("ndcg", 0).unwrap().name(), "ndcg");
+        assert_eq!(create_metric("map", 0).unwrap().name(), "map");
+        // `@k` suffix parses without error.
+        assert_eq!(create_metric("ndcg@5", 0).unwrap().name(), "ndcg");
+        assert_eq!(create_metric("map@10", 0).unwrap().name(), "map");
     }
 
     #[test]

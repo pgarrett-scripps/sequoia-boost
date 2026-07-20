@@ -213,7 +213,7 @@ fn train_impl(
 
     for round in 0..num_boost_round {
         // 1. Gradients from the current margins (all outputs at once).
-        objective.gradient(&train_margin, labels, weights, &mut gpair);
+        objective.gradient_grouped(&train_margin, labels, weights, dtrain.group(), &mut gpair);
 
         // 2. Row subsampling is shared across the round's per-output trees.
         let mut rng =
@@ -260,7 +260,7 @@ fn train_impl(
                 let dl = d.labels().unwrap_or(&[]);
                 let dw = d.weights();
                 for m in &metrics {
-                    let v = m.eval(&preds, dl, dw);
+                    let v = m.eval_grouped(&preds, dl, dw, d.group());
                     scores.push((name.to_string(), m.name().to_string(), v));
                     last_metric_value = v;
                 }
@@ -571,6 +571,64 @@ mod tests {
         for (a, b) in builtin.iter().zip(&custom) {
             assert!((a - b).abs() < 1e-5, "{a} vs {b}");
         }
+    }
+
+    #[test]
+    fn ranking_ndcg_improves_over_rounds() {
+        use crate::metric::Ndcg;
+        // Query groups whose single feature is correlated with relevance, so a
+        // ranker can learn to order documents. Docs are laid out in ascending
+        // relevance (the worst initial order given zero starting margins).
+        let n_groups = 30usize;
+        let per = 6usize;
+        let n = n_groups * per;
+        let mut x = Vec::with_capacity(n);
+        let mut y = Vec::with_capacity(n);
+        let sizes = vec![per; n_groups];
+        let mut s: u64 = 42;
+        let mut rng = || {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+            ((s >> 33) as f32) / (1u32 << 31) as f32
+        };
+        for _ in 0..n_groups {
+            for d in 0..per {
+                let rel = d as f32; // relevance grade 0..per-1
+                let noise = (rng() - 0.5) * 0.8;
+                x.push(rel + noise);
+                y.push(rel);
+            }
+        }
+        let d = DMatrix::from_dense(&x, n, 1)
+            .unwrap()
+            .with_labels(&y)
+            .unwrap()
+            .with_group_sizes(&sizes)
+            .unwrap();
+
+        let params = TrainingParams::builder()
+            .objective("rank:ndcg")
+            .max_depth(3)
+            .eta(0.2)
+            .build()
+            .unwrap();
+        let res = train_with_eval(&params, &d, 40, &[(&d, "train")], None).unwrap();
+        assert!(!res.history.is_empty());
+
+        let ndcg_of = |r: &RoundEval| {
+            r.scores.iter().find(|(_, m, _)| m == "ndcg").unwrap().2
+        };
+        let first = ndcg_of(&res.history[0]);
+        let last = ndcg_of(res.history.last().unwrap());
+
+        // Baseline NDCG of the untrained (all-equal-score) ranking.
+        let base =
+            Ndcg::new(None).eval_grouped(&vec![0.0; n], &y, None, d.group());
+        assert!(last >= first - 1e-9, "ndcg regressed: {first} -> {last}");
+        assert!(
+            last > base + 1e-3,
+            "training should beat the untrained baseline: {base} -> {last}"
+        );
+        assert!(last > 0.9, "final ndcg should be high, got {last}");
     }
 
     #[test]
