@@ -11,6 +11,7 @@ use crate::objective::{create_objective, GradPair};
 use crate::tree::builder::{
     all_features, all_rows, ExactTreeBuilder, HistTreeBuilder, SortedColumns,
 };
+use crate::tree::sampler::ColumnSampler;
 use crate::tree::RegTree;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
@@ -30,14 +31,14 @@ impl Prepared {
         dtrain: &DMatrix,
         gpair: &[GradPair],
         rows: &[u32],
-        features: &[u32],
+        sampler: &mut ColumnSampler,
     ) -> RegTree {
         match self {
             Prepared::Exact(cols) => {
-                ExactTreeBuilder::new(params).build(cols, dtrain, gpair, rows, features)
+                ExactTreeBuilder::new(params).build(cols, dtrain, gpair, rows, sampler)
             }
             Prepared::Hist(ghist) => {
-                HistTreeBuilder::new(params).build(ghist, gpair, rows, features)
+                HistTreeBuilder::new(params).build(ghist, gpair, rows, sampler)
             }
         }
     }
@@ -266,9 +267,9 @@ fn train_impl(
                     &gpair_k
                 };
 
-                let feature_subset = sample_features(n_features, params.colsample_bytree, &mut rng);
-                let mut tree =
-                    prepared.build_tree(params, dtrain, gk, &row_subset, &feature_subset);
+                let mut sampler =
+                    make_column_sampler(n_features, params, &mut rng, round as u64, k as u64);
+                let mut tree = prepared.build_tree(params, dtrain, gk, &row_subset, &mut sampler);
                 tree.scale_leaves(params.eta as f32);
 
                 // Update cached margins for output k.
@@ -395,8 +396,9 @@ fn dart_round(
             }
             gpair_k
         };
-        let feature_subset = sample_features(n_features, params.colsample_bytree, &mut rng);
-        let mut tree = prepared.build_tree(params, dtrain, gk, &row_subset, &feature_subset);
+        let mut sampler =
+            make_column_sampler(n_features, params, &mut rng, round as u64, kk as u64);
+        let mut tree = prepared.build_tree(params, dtrain, gk, &row_subset, &mut sampler);
         tree.scale_leaves(params.eta as f32);
         model.push_tree_weighted(tree, new_weight);
     }
@@ -434,6 +436,29 @@ fn sample_features(n: usize, colsample: f64, rng: &mut StdRng) -> Vec<u32> {
     idx.truncate(k);
     idx.sort_unstable();
     idx
+}
+
+/// Build the per-tree column sampler: draw the `colsample_bytree` pool from
+/// `rng`, then hand it to a [`ColumnSampler`] that applies `bylevel`/`bynode`
+/// with a seed derived from the round and output index (reproducible).
+fn make_column_sampler(
+    n_features: usize,
+    params: &TrainingParams,
+    rng: &mut StdRng,
+    round: u64,
+    output: u64,
+) -> ColumnSampler {
+    let pool = sample_features(n_features, params.colsample_bytree, rng);
+    let seed = params
+        .seed
+        .wrapping_add(round.wrapping_mul(0x9E37_79B9_7F4A_7C15))
+        .wrapping_add(output.wrapping_mul(0xC2B2_AE3D_27D4_EB4F));
+    ColumnSampler::new(
+        pool,
+        params.colsample_bylevel,
+        params.colsample_bynode,
+        seed,
+    )
 }
 
 #[cfg(test)]
@@ -865,6 +890,49 @@ mod tests {
             rmse_cat < rmse_num,
             "categorical ({rmse_cat}) should beat numeric ({rmse_num})"
         );
+    }
+
+    #[test]
+    fn colsample_bynode_changes_the_model() {
+        // Multi-feature dataset so column sampling has features to drop.
+        let (n, f) = (400usize, 8usize);
+        let mut x = vec![0f32; n * f];
+        let mut y = vec![0f32; n];
+        let mut s: u64 = 3;
+        let mut rng = || {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+            ((s >> 33) as f32) / (1u32 << 31) as f32
+        };
+        for i in 0..n {
+            let mut acc = 0.0;
+            for j in 0..f {
+                let v = rng();
+                x[i * f + j] = v;
+                acc += v * (j as f32 + 1.0);
+            }
+            y[i] = acc;
+        }
+        let d = DMatrix::from_dense(&x, n, f)
+            .unwrap()
+            .with_labels(&y)
+            .unwrap();
+
+        let train_with = |bynode: f64| {
+            let p = TrainingParams::builder()
+                .objective("reg:squarederror")
+                .max_depth(4)
+                .eta(0.3)
+                .colsample_bynode(bynode)
+                .seed(1)
+                .build()
+                .unwrap();
+            train(&p, &d, 20).unwrap().predict(&d).unwrap()
+        };
+        let full = train_with(1.0);
+        let sampled = train_with(0.5);
+        // With per-node sampling active, the fitted model must differ.
+        let differs = full.iter().zip(&sampled).any(|(a, b)| (a - b).abs() > 1e-6);
+        assert!(differs, "colsample_bynode had no effect on the model");
     }
 
     #[test]

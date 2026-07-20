@@ -15,6 +15,7 @@ use crate::tree::constraints::{
 use crate::tree::gain::{GradStats, RegParams};
 use crate::tree::hist::{zeroed, CpuBackend, Histogram, HistogramBackend};
 use crate::tree::regtree::RegTree;
+use crate::tree::sampler::ColumnSampler;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
@@ -113,13 +114,13 @@ impl<'a> HistTreeBuilder<'a> {
     /// * `ghist` — the binned dataset (built once, reused across rounds).
     /// * `gpair` — per-row gradient/Hessian (length = dataset rows).
     /// * `row_subset` — sampled rows for this tree.
-    /// * `feature_subset` — sampled features for this tree.
+    /// * `sampler` — per-tree column sampler; a fresh subset is drawn per node.
     pub fn build(
         &self,
         ghist: &GHistIndex,
         gpair: &[GradPair],
         row_subset: &[u32],
-        feature_subset: &[u32],
+        sampler: &mut ColumnSampler,
     ) -> RegTree {
         let total_bins = ghist.total_bins();
 
@@ -138,11 +139,13 @@ impl<'a> HistTreeBuilder<'a> {
             bounds: vec![Bounds::default()],
         };
 
+        // Per-node column sampling (bylevel ∘ bynode) draws a fresh subset here.
+        let root_feats = sampler.sample();
         let best = self.evaluate(
             ghist.cuts(),
             &root_hist,
             root_stats,
-            feature_subset,
+            &root_feats,
             Bounds::default(),
         );
         let root = NodeEntry {
@@ -156,10 +159,10 @@ impl<'a> HistTreeBuilder<'a> {
 
         match self.params.grow_policy {
             GrowPolicy::DepthWise => {
-                self.grow_depthwise(&mut tree, &mut store, ghist, gpair, feature_subset, root)
+                self.grow_depthwise(&mut tree, &mut store, ghist, gpair, sampler, root)
             }
             GrowPolicy::LossGuide => {
-                self.grow_lossguide(&mut tree, &mut store, ghist, gpair, feature_subset, root)
+                self.grow_lossguide(&mut tree, &mut store, ghist, gpair, sampler, root)
             }
         }
 
@@ -188,7 +191,7 @@ impl<'a> HistTreeBuilder<'a> {
         store: &mut NodeStore,
         ghist: &GHistIndex,
         gpair: &[GradPair],
-        feature_subset: &[u32],
+        sampler: &mut ColumnSampler,
         root: NodeEntry,
     ) {
         let limit = self.depth_limit();
@@ -198,7 +201,7 @@ impl<'a> HistTreeBuilder<'a> {
             let mut next = Vec::new();
             for entry in frontier.drain(..) {
                 if self.valid(&entry.best) {
-                    let (l, r) = self.split(tree, store, ghist, gpair, feature_subset, entry);
+                    let (l, r) = self.split(tree, store, ghist, gpair, sampler, entry);
                     next.push(l);
                     next.push(r);
                 }
@@ -214,7 +217,7 @@ impl<'a> HistTreeBuilder<'a> {
         store: &mut NodeStore,
         ghist: &GHistIndex,
         gpair: &[GradPair],
-        feature_subset: &[u32],
+        sampler: &mut ColumnSampler,
         root: NodeEntry,
     ) {
         let limit = self.depth_limit();
@@ -233,7 +236,7 @@ impl<'a> HistTreeBuilder<'a> {
             if entry.depth >= limit || !self.valid(&entry.best) {
                 continue; // permanent leaf
             }
-            let (l, r) = self.split(tree, store, ghist, gpair, feature_subset, entry);
+            let (l, r) = self.split(tree, store, ghist, gpair, sampler, entry);
             n_leaves += 1; // one leaf became two
             heap.push(l);
             heap.push(r);
@@ -256,7 +259,7 @@ impl<'a> HistTreeBuilder<'a> {
         store: &mut NodeStore,
         ghist: &GHistIndex,
         gpair: &[GradPair],
-        feature_subset: &[u32],
+        sampler: &mut ColumnSampler,
         entry: NodeEntry,
     ) -> (NodeEntry, NodeEntry) {
         let cuts = ghist.cuts();
@@ -334,8 +337,11 @@ impl<'a> HistTreeBuilder<'a> {
             (lh, rh)
         };
 
-        let left_best = self.evaluate(cuts, &left_hist, b.left, feature_subset, lb_bounds);
-        let right_best = self.evaluate(cuts, &right_hist, b.right, feature_subset, rb_bounds);
+        // Each child draws its own column subset (per-node sampling).
+        let lf = sampler.sample();
+        let left_best = self.evaluate(cuts, &left_hist, b.left, &lf, lb_bounds);
+        let rf = sampler.sample();
+        let right_best = self.evaluate(cuts, &right_hist, b.right, &rf, rb_bounds);
 
         let left = NodeEntry {
             nid: left_id,
@@ -598,7 +604,7 @@ mod tests {
     use super::*;
     use crate::config::TrainingParams;
     use crate::data::DMatrix;
-    use crate::tree::builder::{all_features, all_rows};
+    use crate::tree::builder::all_rows;
 
     fn gp(g: f32, h: f32) -> GradPair {
         GradPair::new(g, h)
@@ -622,8 +628,12 @@ mod tests {
             .gamma(0.0)
             .build()
             .unwrap();
-        let tree =
-            HistTreeBuilder::new(&params).build(&ghist, &gpair, &all_rows(4), &all_features(1));
+        let tree = HistTreeBuilder::new(&params).build(
+            &ghist,
+            &gpair,
+            &all_rows(4),
+            &mut crate::tree::sampler::ColumnSampler::all(1),
+        );
         assert_eq!(tree.num_nodes(), 3);
         assert!((tree.predict_row(&data, 0) - (-1.0)).abs() < 1e-6);
         assert!((tree.predict_row(&data, 2) - 1.0).abs() < 1e-6);
@@ -640,8 +650,12 @@ mod tests {
             .gamma(1e9)
             .build()
             .unwrap();
-        let tree =
-            HistTreeBuilder::new(&params).build(&ghist, &gpair, &all_rows(2), &all_features(1));
+        let tree = HistTreeBuilder::new(&params).build(
+            &ghist,
+            &gpair,
+            &all_rows(2),
+            &mut crate::tree::sampler::ColumnSampler::all(1),
+        );
         assert_eq!(tree.num_nodes(), 1);
     }
 
@@ -665,7 +679,12 @@ mod tests {
             .lambda(0.0)
             .build()
             .unwrap();
-        let tree = HistTreeBuilder::new(&params).build(&ghist, &y, &all_rows(n), &all_features(1));
+        let tree = HistTreeBuilder::new(&params).build(
+            &ghist,
+            &y,
+            &all_rows(n),
+            &mut crate::tree::sampler::ColumnSampler::all(1),
+        );
         assert!(tree.num_leaves() <= 4, "got {} leaves", tree.num_leaves());
     }
 
@@ -694,8 +713,12 @@ mod tests {
             .monotone_constraints(vec![Monotone::Increasing])
             .build()
             .unwrap();
-        let tree =
-            HistTreeBuilder::new(&params).build(&ghist, &gpair, &all_rows(n), &all_features(1));
+        let tree = HistTreeBuilder::new(&params).build(
+            &ghist,
+            &gpair,
+            &all_rows(n),
+            &mut crate::tree::sampler::ColumnSampler::all(1),
+        );
 
         // Predictions must be non-decreasing in x under the increasing constraint.
         let mut prev = f32::NEG_INFINITY;
@@ -736,13 +759,17 @@ mod tests {
             &data,
             &gpair,
             &all_rows(n),
-            &all_features(1),
+            &mut crate::tree::sampler::ColumnSampler::all(1),
         );
 
         // 256 bins over 60 distinct values -> each value its own bin -> exact match.
         let ghist = binned(&data, 256);
-        let hist =
-            HistTreeBuilder::new(&params).build(&ghist, &gpair, &all_rows(n), &all_features(1));
+        let hist = HistTreeBuilder::new(&params).build(
+            &ghist,
+            &gpair,
+            &all_rows(n),
+            &mut crate::tree::sampler::ColumnSampler::all(1),
+        );
 
         for r in 0..n {
             let pe = exact.predict_row(&data, r);

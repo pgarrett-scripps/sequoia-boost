@@ -11,6 +11,7 @@ use crate::data::DMatrix;
 use crate::objective::GradPair;
 use crate::tree::gain::{calc_weight, split_gain, GradStats, RegParams};
 use crate::tree::regtree::RegTree;
+use crate::tree::sampler::ColumnSampler;
 
 /// Tiny epsilon guarding against accepting numerically-zero-gain splits, mirror
 /// of XGBoost's `kRtEps`.
@@ -153,14 +154,15 @@ impl<'a> ExactTreeBuilder<'a> {
     /// * `data` — the dataset (for routing rows after a split).
     /// * `gpair` — per-row gradient/Hessian (length = dataset rows).
     /// * `row_subset` — the sampled rows to train this tree on.
-    /// * `feature_subset` — the sampled features available to this tree.
+    /// * `sampler` — per-tree column sampler; the exact builder draws one subset
+    ///   per level (shared across that level's nodes).
     pub fn build(
         &self,
         cols: &SortedColumns,
         data: &DMatrix,
         gpair: &[GradPair],
         row_subset: &[u32],
-        feature_subset: &[u32],
+        sampler: &mut ColumnSampler,
     ) -> RegTree {
         let n_rows = cols.n_rows();
 
@@ -186,6 +188,8 @@ impl<'a> ExactTreeBuilder<'a> {
         let mut depth = 0;
 
         while depth < depth_limit && !active.is_empty() {
+            // One column subset for the whole level (bylevel ∘ bynode).
+            let feature_subset = sampler.sample();
             let k = active.len();
             // slot_of_node maps an active node id to its dense slot index.
             let mut slot_of_node = vec![usize::MAX; tree.num_nodes()];
@@ -201,7 +205,7 @@ impl<'a> ExactTreeBuilder<'a> {
             let mut last_val = vec![f32::NAN; k];
             let mut has = vec![false; k];
 
-            for &f in feature_subset {
+            for &f in &feature_subset {
                 let (crows, cvals) = cols.column(f as usize);
 
                 // Pass 1: total present statistics per active node for feature f.
@@ -419,7 +423,13 @@ mod tests {
             .build()
             .unwrap();
         let b = ExactTreeBuilder::new(&params);
-        let tree = b.build(&cols, &data, &gpair, &all_rows(4), &all_features(1));
+        let tree = b.build(
+            &cols,
+            &data,
+            &gpair,
+            &all_rows(4),
+            &mut crate::tree::sampler::ColumnSampler::all(1),
+        );
 
         assert_eq!(
             tree.num_nodes(),
@@ -446,7 +456,13 @@ mod tests {
             .build()
             .unwrap();
         let b = ExactTreeBuilder::new(&params);
-        let tree = b.build(&cols, &data, &gpair, &all_rows(2), &all_features(1));
+        let tree = b.build(
+            &cols,
+            &data,
+            &gpair,
+            &all_rows(2),
+            &mut crate::tree::sampler::ColumnSampler::all(1),
+        );
         assert_eq!(tree.num_nodes(), 1, "no split should be taken");
     }
 
@@ -466,7 +482,13 @@ mod tests {
             .build()
             .unwrap();
         let b = ExactTreeBuilder::new(&params);
-        let tree = b.build(&cols, &data, &gpair, &all_rows(3), &all_features(1));
+        let tree = b.build(
+            &cols,
+            &data,
+            &gpair,
+            &all_rows(3),
+            &mut crate::tree::sampler::ColumnSampler::all(1),
+        );
         assert_eq!(tree.num_nodes(), 3);
         // The missing row should be routed with the negative-gradient group
         // (right, positive weight). default_left should therefore be false.
