@@ -66,6 +66,30 @@ impl BoostedModel {
         self.best_iteration = it;
     }
 
+    /// Reassemble a model from its constituent parts. Used by the XGBoost-JSON
+    /// importer, which builds trees and metadata externally.
+    pub(crate) fn from_parts(
+        trees: Vec<RegTree>,
+        base_score: f32,
+        objective: String,
+        num_class: usize,
+        n_features: usize,
+    ) -> Self {
+        BoostedModel {
+            trees,
+            base_score,
+            objective,
+            num_class,
+            n_features,
+            best_iteration: None,
+        }
+    }
+
+    /// The configured `num_class` (`0` for regression / binary objectives).
+    pub(crate) fn num_class(&self) -> usize {
+        self.num_class
+    }
+
     /// Number of trees (boosting rounds × outputs).
     pub fn num_trees(&self) -> usize {
         self.trees.len()
@@ -280,6 +304,31 @@ impl BoostedModel {
     /// Load a model from a JSON file.
     pub fn load_json(path: impl AsRef<std::path::Path>) -> Result<Self> {
         Self::from_json(&std::fs::read_to_string(path)?)
+    }
+
+    /// Serialize the model to XGBoost's JSON model schema (the text form of
+    /// `booster.save_model("m.json")`), so XGBoost-compatible tooling can read
+    /// it. See [`crate::model::export_xgboost_json`] for details and caveats.
+    pub fn to_xgboost_json(&self) -> Result<String> {
+        crate::model::export_xgboost_json(self)
+    }
+
+    /// Parse a model saved in XGBoost's JSON model schema. Best-effort for
+    /// `gbtree` boosters and common objectives; see
+    /// [`crate::model::import_xgboost_json`] for the mapping and limitations.
+    pub fn from_xgboost_json(json: &str) -> Result<Self> {
+        crate::model::import_xgboost_json(json)
+    }
+
+    /// Save the model to a file in XGBoost's JSON model format.
+    pub fn save_xgboost_json(&self, path: impl AsRef<std::path::Path>) -> Result<()> {
+        std::fs::write(path, self.to_xgboost_json()?)?;
+        Ok(())
+    }
+
+    /// Load a model from a file written in XGBoost's JSON model format.
+    pub fn load_xgboost_json(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        Self::from_xgboost_json(&std::fs::read_to_string(path)?)
     }
 
     fn rebuild_objective(&self) -> Result<Box<dyn crate::objective::Objective>> {
