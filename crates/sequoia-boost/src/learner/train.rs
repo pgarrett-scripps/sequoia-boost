@@ -193,11 +193,12 @@ fn train_impl(
 
     let prepared = prepare_builder(params, dtrain)?;
 
-    // Incremental margin caches (length rows × n_out).
-    let mut train_margin = vec![base_margin; n * n_out];
+    // Incremental margin caches (length rows × n_out). A dataset's per-instance
+    // `base_margin`, when present, overrides the scalar base score.
+    let mut train_margin = init_margin(dtrain, base_margin, n_out);
     let mut eval_margins: Vec<Vec<f32>> = evals
         .iter()
-        .map(|(d, _)| vec![base_margin; d.n_rows() * n_out])
+        .map(|(d, _)| init_margin(d, base_margin, n_out))
         .collect();
 
     let metrics = create_metrics(
@@ -436,6 +437,28 @@ fn sample_features(n: usize, colsample: f64, rng: &mut StdRng) -> Vec<u32> {
     idx.truncate(k);
     idx.sort_unstable();
     idx
+}
+
+/// Initialize the margin buffer for `data`: the scalar `base_margin` broadcast
+/// to every `(row, output)`, then overridden by the dataset's per-instance
+/// `base_margin` when present. Accepts a base margin of length `n_rows`
+/// (broadcast across outputs) or `n_rows * n_out` (per output); a mismatched
+/// length is ignored (the scalar stands).
+fn init_margin(data: &DMatrix, base_margin: f32, n_out: usize) -> Vec<f32> {
+    let n = data.n_rows();
+    let mut m = vec![base_margin; n * n_out];
+    if let Some(bm) = data.base_margin() {
+        if bm.len() == n * n_out {
+            m.copy_from_slice(bm);
+        } else if bm.len() == n {
+            for r in 0..n {
+                for k in 0..n_out {
+                    m[r * n_out + k] = bm[r];
+                }
+            }
+        }
+    }
+    m
 }
 
 /// Build the per-tree column sampler: draw the `colsample_bytree` pool from
@@ -890,6 +913,46 @@ mod tests {
             rmse_cat < rmse_num,
             "categorical ({rmse_cat}) should beat numeric ({rmse_num})"
         );
+    }
+
+    #[test]
+    fn base_margin_is_the_initial_margin() {
+        // With 0 rounds and a per-instance base margin, the raw margin
+        // prediction must equal that base margin exactly.
+        let d = step_dataset(50);
+        let bm: Vec<f32> = (0..50).map(|i| i as f32 * 0.01 - 0.25).collect();
+        let d_bm = d.with_base_margin(&bm).unwrap();
+        let params = TrainingParams::builder()
+            .objective("reg:squarederror")
+            .build()
+            .unwrap();
+        let model = train(&params, &d_bm, 0).unwrap();
+        let margin = model.predict_margin(&d_bm);
+        for (m, b) in margin.iter().zip(&bm) {
+            assert!((m - b).abs() < 1e-6, "{m} vs {b}");
+        }
+    }
+
+    #[test]
+    fn base_margin_affects_training() {
+        let d = step_dataset(60);
+        let params = TrainingParams::builder()
+            .objective("reg:squarederror")
+            .max_depth(3)
+            .eta(0.3)
+            .build()
+            .unwrap();
+        let plain = train(&params, &d, 10).unwrap().predict_margin(&d);
+
+        let bm = vec![2.0f32; 60];
+        let d_bm = d.with_base_margin(&bm).unwrap();
+        let shifted = train(&params, &d_bm, 10).unwrap().predict_margin(&d_bm);
+
+        // A nonzero starting margin changes the fitted margins.
+        assert!(plain
+            .iter()
+            .zip(&shifted)
+            .any(|(a, b)| (a - b).abs() > 1e-4));
     }
 
     #[test]

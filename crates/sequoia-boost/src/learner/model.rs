@@ -202,7 +202,21 @@ impl BoostedModel {
         } else {
             ntree_limit.min(self.trees.len())
         };
+        // Initialize from the dataset's per-instance base margin when present
+        // (it overrides the scalar base score, matching XGBoost); otherwise use
+        // the trained global bias.
         let mut out = vec![self.base_score; n * k];
+        if let Some(bm) = data.base_margin() {
+            if bm.len() == n * k {
+                out.copy_from_slice(bm);
+            } else if bm.len() == n {
+                for row in 0..n {
+                    for c in 0..k {
+                        out[row * k + c] = bm[row];
+                    }
+                }
+            }
+        }
         for (ti, tree) in self.trees[..limit].iter().enumerate() {
             let w = self.tree_weight(ti);
             let cls = ti % k;
