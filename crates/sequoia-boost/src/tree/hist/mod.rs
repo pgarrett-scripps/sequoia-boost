@@ -6,9 +6,9 @@
 //! partial histograms and reduce them, and provides the *subtraction trick*
 //! (`sibling = parent − child`) that halves histogram construction cost.
 
+use crate::data::ghist::GHistIndex;
 use crate::objective::GradPair;
 use crate::tree::gain::GradStats;
-use crate::data::ghist::GHistIndex;
 use rayon::prelude::*;
 
 /// A gradient histogram: one [`GradStats`] bucket per global bin.
@@ -94,7 +94,12 @@ mod tests {
     use crate::data::quantile::HistCuts;
     use crate::data::DMatrix;
 
-    fn brute_force(ghist: &GHistIndex, rows: &[u32], gpair: &[GradPair], total: usize) -> Histogram {
+    fn brute_force(
+        ghist: &GHistIndex,
+        rows: &[u32],
+        gpair: &[GradPair],
+        total: usize,
+    ) -> Histogram {
         let mut h = zeroed(total);
         accumulate(ghist, rows, gpair, &mut h);
         h
@@ -157,7 +162,12 @@ mod tests {
         CpuBackend.build(&ghist, &rows, &gpair, &mut out);
         let expect = brute_force(&ghist, &rows, &gpair, ghist.total_bins());
         for (a, b) in out.iter().zip(&expect) {
-            assert!((a.grad - b.grad).abs() < 1e-2, "grad {} vs {}", a.grad, b.grad);
+            assert!(
+                (a.grad - b.grad).abs() < 1e-2,
+                "grad {} vs {}",
+                a.grad,
+                b.grad
+            );
             assert!((a.hess - b.hess).abs() < 1e-2);
         }
     }

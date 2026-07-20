@@ -245,9 +245,7 @@ impl TrainingParams {
                 format!("must be >= 2, got {}", self.max_bin),
             ));
         }
-        if self.grow_policy == GrowPolicy::LossGuide
-            && self.max_leaves == 0
-            && self.max_depth == 0
+        if self.grow_policy == GrowPolicy::LossGuide && self.max_leaves == 0 && self.max_depth == 0
         {
             return Err(SequoiaError::invalid_param(
                 "max_leaves",

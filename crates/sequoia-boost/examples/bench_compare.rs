@@ -21,7 +21,8 @@ fn read_f32(path: &str) -> Vec<f32> {
 fn main() -> Result<()> {
     let dir = std::env::var("BENCH_DIR").expect("set BENCH_DIR");
     let meta: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(format!("{dir}/meta.json")).unwrap()).unwrap();
+        serde_json::from_str(&std::fs::read_to_string(format!("{dir}/meta.json")).unwrap())
+            .unwrap();
     let n_rows = meta["n_rows"].as_u64().unwrap() as usize;
     let n_cols = meta["n_cols"].as_u64().unwrap() as usize;
     let num_round = meta["num_round"].as_u64().unwrap() as usize;

@@ -137,9 +137,9 @@ pub fn create_objective(params: &TrainingParams) -> Result<Box<dyn Objective>> {
     match params.objective.as_str() {
         "reg:squarederror" | "reg:linear" => Ok(Box::new(SquaredErrorObjective)),
         "reg:pseudohubererror" => Ok(Box::new(PseudoHuberObjective)),
-        "binary:logistic" | "reg:logistic" => {
-            Ok(Box::new(LogisticObjective::new(params.scale_pos_weight as f32)))
-        }
+        "binary:logistic" | "reg:logistic" => Ok(Box::new(LogisticObjective::new(
+            params.scale_pos_weight as f32,
+        ))),
         "multi:softmax" | "multi:softprob" => {
             if params.num_class < 2 {
                 return Err(SequoiaError::invalid_param(

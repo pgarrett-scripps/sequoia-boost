@@ -9,7 +9,7 @@ authors.workspace = true
 description.workspace = true
 keywords.workspace = true
 categories.workspace = true
-readme = "../../README.md"
+readme = "README.md"
 
 [lib]
 name = "sequoia_boost"

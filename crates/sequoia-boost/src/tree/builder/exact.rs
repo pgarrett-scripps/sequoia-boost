@@ -205,7 +205,9 @@ impl<'a> ExactTreeBuilder<'a> {
                 let (crows, cvals) = cols.column(f as usize);
 
                 // Pass 1: total present statistics per active node for feature f.
-                present_total.iter_mut().for_each(|s| *s = GradStats::default());
+                present_total
+                    .iter_mut()
+                    .for_each(|s| *s = GradStats::default());
                 for &rr in crows {
                     let r = rr as usize;
                     let nid = node_of_row[r];
@@ -287,7 +289,14 @@ impl<'a> ExactTreeBuilder<'a> {
                 node_stats.push(b.right);
                 next_active.push(left_id);
                 next_active.push(right_id);
-                splits.push((nid, b.feature, b.threshold, b.default_left, left_id, right_id));
+                splits.push((
+                    nid,
+                    b.feature,
+                    b.threshold,
+                    b.default_left,
+                    left_id,
+                    right_id,
+                ));
             }
 
             // Route each sampled row into its child for the nodes that split.
@@ -312,7 +321,11 @@ impl<'a> ExactTreeBuilder<'a> {
                         Some(v) => v < threshold,
                         None => default_left,
                     };
-                    node_of_row[r] = if go_left { left_id as i32 } else { right_id as i32 };
+                    node_of_row[r] = if go_left {
+                        left_id as i32
+                    } else {
+                        right_id as i32
+                    };
                 }
             }
 
@@ -408,7 +421,11 @@ mod tests {
         let b = ExactTreeBuilder::new(&params);
         let tree = b.build(&cols, &data, &gpair, &all_rows(4), &all_features(1));
 
-        assert_eq!(tree.num_nodes(), 3, "root should have split into two leaves");
+        assert_eq!(
+            tree.num_nodes(),
+            3,
+            "root should have split into two leaves"
+        );
         let root = tree.node(0);
         assert_eq!(root.split_feature, 0);
         assert!((root.split_cond - 0.5).abs() < 1e-6);

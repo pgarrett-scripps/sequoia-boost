@@ -138,7 +138,8 @@ pub fn train_with_eval(
     )
 }
 
-/// Train with a user-supplied [`Objective`] (the custom-objective hook).
+/// Train with a user-supplied [`Objective`](crate::objective::Objective) (the
+/// custom-objective hook).
 pub fn train_with_objective(
     params: &TrainingParams,
     dtrain: &DMatrix,
@@ -198,7 +199,11 @@ fn train_impl(
         .map(|(d, _)| vec![base_margin; d.n_rows() * n_out])
         .collect();
 
-    let metrics = create_metrics(&params.eval_metric, objective.default_metric(), params.num_class)?;
+    let metrics = create_metrics(
+        &params.eval_metric,
+        objective.default_metric(),
+        params.num_class,
+    )?;
 
     let mut gpair = vec![GradPair::default(); n * n_out];
     // Per-output gradient buffer reused across classes (single-output aliases it).
@@ -207,7 +212,11 @@ fn train_impl(
 
     // Early-stopping bookkeeping.
     let maximize = metrics.last().map(|m| m.maximize()).unwrap_or(false);
-    let mut best_score = if maximize { f64::NEG_INFINITY } else { f64::INFINITY };
+    let mut best_score = if maximize {
+        f64::NEG_INFINITY
+    } else {
+        f64::INFINITY
+    };
     let mut best_iter = 0usize;
     let mut rounds_since_improve = 0usize;
 
@@ -258,7 +267,8 @@ fn train_impl(
                 };
 
                 let feature_subset = sample_features(n_features, params.colsample_bytree, &mut rng);
-                let mut tree = prepared.build_tree(params, dtrain, gk, &row_subset, &feature_subset);
+                let mut tree =
+                    prepared.build_tree(params, dtrain, gk, &row_subset, &feature_subset);
                 tree.scale_leaves(params.eta as f32);
 
                 // Update cached margins for output k.
@@ -404,7 +414,9 @@ fn sample_rows(n: usize, subsample: f64, rng: &mut StdRng) -> Vec<u32> {
     if subsample >= 1.0 {
         return all_rows(n);
     }
-    let mut rows: Vec<u32> = (0..n as u32).filter(|_| rng.gen::<f64>() < subsample).collect();
+    let mut rows: Vec<u32> = (0..n as u32)
+        .filter(|_| rng.gen::<f64>() < subsample)
+        .collect();
     if rows.is_empty() {
         rows.push(rng.gen_range(0..n as u32));
     }
@@ -439,7 +451,10 @@ mod tests {
             x.push(xi);
             y.push(if xi >= 0.5 { 1.0 } else { 0.0 });
         }
-        DMatrix::from_dense(&x, n, 1).unwrap().with_labels(&y).unwrap()
+        DMatrix::from_dense(&x, n, 1)
+            .unwrap()
+            .with_labels(&y)
+            .unwrap()
     }
 
     #[test]
@@ -471,7 +486,7 @@ mod tests {
             .unwrap();
         let model = train(&params, &d, 50).unwrap();
         let preds = model.predict(&d).unwrap(); // probabilities
-        // Low-x rows -> ~0, high-x rows -> ~1.
+                                                // Low-x rows -> ~0, high-x rows -> ~1.
         assert!(preds[0] < 0.1, "expected ~0, got {}", preds[0]);
         assert!(preds[99] > 0.9, "expected ~1, got {}", preds[99]);
     }
@@ -561,7 +576,10 @@ mod tests {
                 2.0
             });
         }
-        let d = DMatrix::from_dense(&x, n, 1).unwrap().with_labels(&y).unwrap();
+        let d = DMatrix::from_dense(&x, n, 1)
+            .unwrap()
+            .with_labels(&y)
+            .unwrap();
         let params = TrainingParams::builder()
             .objective("multi:softprob")
             .num_class(3)
@@ -609,7 +627,10 @@ mod tests {
             let rate = 1.0 + 5.0 * xi;
             y.push(rate.round());
         }
-        let d = DMatrix::from_dense(&x, n, 1).unwrap().with_labels(&y).unwrap();
+        let d = DMatrix::from_dense(&x, n, 1)
+            .unwrap()
+            .with_labels(&y)
+            .unwrap();
         let params = TrainingParams::builder()
             .objective("count:poisson")
             .max_depth(3)
@@ -633,7 +654,10 @@ mod tests {
         }
         let lo_mean = lo_sum / lo_n as f32;
         let hi_mean = hi_sum / hi_n as f32;
-        assert!(lo_mean < hi_mean, "rate should rise with x: {lo_mean} vs {hi_mean}");
+        assert!(
+            lo_mean < hi_mean,
+            "rate should rise with x: {lo_mean} vs {hi_mean}"
+        );
     }
 
     #[test]
@@ -717,15 +741,12 @@ mod tests {
         let res = train_with_eval(&params, &d, 40, &[(&d, "train")], None).unwrap();
         assert!(!res.history.is_empty());
 
-        let ndcg_of = |r: &RoundEval| {
-            r.scores.iter().find(|(_, m, _)| m == "ndcg").unwrap().2
-        };
+        let ndcg_of = |r: &RoundEval| r.scores.iter().find(|(_, m, _)| m == "ndcg").unwrap().2;
         let first = ndcg_of(&res.history[0]);
         let last = ndcg_of(res.history.last().unwrap());
 
         // Baseline NDCG of the untrained (all-equal-score) ranking.
-        let base =
-            Ndcg::new(None).eval_grouped(&vec![0.0; n], &y, None, d.group());
+        let base = Ndcg::new(None).eval_grouped(&vec![0.0; n], &y, None, d.group());
         assert!(last >= first - 1e-9, "ndcg regressed: {first} -> {last}");
         assert!(
             last > base + 1e-3,
@@ -813,7 +834,10 @@ mod tests {
             }
         }
         let n = x.len();
-        let numeric = DMatrix::from_dense(&x, n, 1).unwrap().with_labels(&y).unwrap();
+        let numeric = DMatrix::from_dense(&x, n, 1)
+            .unwrap()
+            .with_labels(&y)
+            .unwrap();
         let categorical = numeric
             .clone()
             .with_feature_types(&[FeatureType::Categorical])
@@ -853,8 +877,7 @@ mod tests {
             .build()
             .unwrap();
         // Use the training set as its own eval just to exercise the mechanism.
-        let res =
-            train_with_eval(&params, &d, 200, &[(&d, "train")], Some(5)).unwrap();
+        let res = train_with_eval(&params, &d, 200, &[(&d, "train")], Some(5)).unwrap();
         // Should stop well before 200 rounds once RMSE plateaus.
         assert!(res.model.num_trees() < 200);
         assert!(res.model.best_iteration().is_some());

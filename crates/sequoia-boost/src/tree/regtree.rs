@@ -21,9 +21,9 @@ pub struct Node {
     pub split_cond: f32,
     /// Direction taken by instances with a missing value at this node.
     pub default_left: bool,
-    /// Left child index, or [`NO_CHILD`] for a leaf.
+    /// Left child index, or `-1` for a leaf.
     pub left: i32,
-    /// Right child index, or [`NO_CHILD`] for a leaf.
+    /// Right child index, or `-1` for a leaf.
     pub right: i32,
     /// Leaf weight (used only for leaves).
     pub leaf_value: f32,

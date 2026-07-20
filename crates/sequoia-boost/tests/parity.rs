@@ -37,13 +37,11 @@ struct Fixture {
     y: Vec<f32>,
     params: FixtureParams,
     xgb_pred: Vec<f32>,
-    tolerance: f64,
 }
 
 fn fixtures_dir() -> PathBuf {
     // Repo root fixtures/ relative to this crate.
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../fixtures")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures")
 }
 
 fn run_fixture(fx: &Fixture) -> bool {
@@ -68,7 +66,12 @@ fn run_fixture(fx: &Fixture) -> bool {
 
     let model = train(&params, &d, fx.num_round).unwrap();
     let preds = model.predict(&d).unwrap();
-    assert_eq!(preds.len(), fx.xgb_pred.len(), "{}: length mismatch", fx.name);
+    assert_eq!(
+        preds.len(),
+        fx.xgb_pred.len(),
+        "{}: length mismatch",
+        fx.name
+    );
 
     // Pointwise agreement (informational: two different histogram
     // implementations pick different split points, so this is never zero).
@@ -156,5 +159,8 @@ fn xgboost_parity() {
     for fx in &fixtures {
         all_ok &= run_fixture(fx);
     }
-    assert!(all_ok, "one or more fixtures failed the quality-parity check");
+    assert!(
+        all_ok,
+        "one or more fixtures failed the quality-parity check"
+    );
 }

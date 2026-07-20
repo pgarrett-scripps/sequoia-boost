@@ -14,7 +14,9 @@ fn make_data(n: usize, f: usize) -> DMatrix {
     let mut y = vec![0f32; n];
     let mut s: u64 = 0x2545F4914F6CDD1D;
     let mut rng = || {
-        s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         ((s >> 33) as f32) / (1u32 << 31) as f32
     };
     for i in 0..n {
@@ -28,7 +30,10 @@ fn make_data(n: usize, f: usize) -> DMatrix {
         }
         y[i] = acc + rng() * 0.1;
     }
-    DMatrix::from_dense(&x, n, f).unwrap().with_labels(&y).unwrap()
+    DMatrix::from_dense(&x, n, f)
+        .unwrap()
+        .with_labels(&y)
+        .unwrap()
 }
 
 fn bench_histogram_build(c: &mut Criterion) {
@@ -37,7 +42,9 @@ fn bench_histogram_build(c: &mut Criterion) {
         let data = make_data(n, 30);
         let cuts = HistCuts::from_dmatrix(&data, 256);
         let ghist = GHistIndex::from_dmatrix(&data, cuts);
-        let gpair: Vec<GradPair> = (0..n).map(|i| GradPair::new((i % 7) as f32 - 3.0, 1.0)).collect();
+        let gpair: Vec<GradPair> = (0..n)
+            .map(|i| GradPair::new((i % 7) as f32 - 3.0, 1.0))
+            .collect();
         let rows: Vec<u32> = (0..n as u32).collect();
         let mut out = zeroed(ghist.total_bins());
 

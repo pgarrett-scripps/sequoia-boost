@@ -46,7 +46,12 @@ struct PathElement {
 /// `path` holds the parent path (`unique_depth` elements before the call); the
 /// new element is appended, and every existing element's `pweight` is updated to
 /// account for one extra split in the coalition ordering.
-fn extend_path(path: &mut Vec<PathElement>, zero_fraction: f64, one_fraction: f64, feature_index: i64) {
+fn extend_path(
+    path: &mut Vec<PathElement>,
+    zero_fraction: f64,
+    one_fraction: f64,
+    feature_index: i64,
+) {
     let unique_depth = path.len(); // index the new element will occupy
     path.push(PathElement {
         feature_index,
@@ -74,7 +79,8 @@ fn unwind_path(path: &mut Vec<PathElement>, path_index: usize) {
         if one_fraction != 0.0 {
             let tmp = path[i].pweight;
             path[i].pweight = next_one_portion * denom / ((i + 1) as f64 * one_fraction);
-            next_one_portion = tmp - path[i].pweight * zero_fraction * (unique_depth - i) as f64 / denom;
+            next_one_portion =
+                tmp - path[i].pweight * zero_fraction * (unique_depth - i) as f64 / denom;
         } else if zero_fraction != 0.0 {
             path[i].pweight = path[i].pweight * denom / (zero_fraction * (unique_depth - i) as f64);
         }
@@ -100,7 +106,8 @@ fn unwound_path_sum(path: &[PathElement], path_index: usize) -> f64 {
         if one_fraction != 0.0 {
             let tmp = next_one_portion * denom / ((i + 1) as f64 * one_fraction);
             total += tmp;
-            next_one_portion = path[i].pweight - tmp * zero_fraction * (unique_depth - i) as f64 / denom;
+            next_one_portion =
+                path[i].pweight - tmp * zero_fraction * (unique_depth - i) as f64 / denom;
         } else if zero_fraction != 0.0 {
             total += (path[i].pweight / zero_fraction) / ((unique_depth - i) as f64 / denom);
         }
@@ -125,7 +132,12 @@ fn tree_shap(
     get: &impl Fn(u32) -> Option<f32>,
     phi: &mut [f64],
 ) {
-    extend_path(&mut path, parent_zero_fraction, parent_one_fraction, parent_feature_index);
+    extend_path(
+        &mut path,
+        parent_zero_fraction,
+        parent_one_fraction,
+        parent_feature_index,
+    );
     let node = tree.node(node_index);
     let unique_depth = path.len() - 1;
 
@@ -262,7 +274,16 @@ impl BoostedModel {
                 let cls = ti % k;
                 let off = cls * width;
                 // Feature attributions.
-                tree_shap(tree, 0, Vec::new(), 1.0, 1.0, -1, &get, &mut acc[off..off + nf]);
+                tree_shap(
+                    tree,
+                    0,
+                    Vec::new(),
+                    1.0,
+                    1.0,
+                    -1,
+                    &get,
+                    &mut acc[off..off + nf],
+                );
                 // Tree expected value folds into the bias column.
                 acc[off + nf] += tree_means[ti];
             }
@@ -296,7 +317,10 @@ mod tests {
             let f1 = x[i * nf + 1];
             y[i] = 2.0 * f0 - 1.5 * f1 + 0.3;
         }
-        DMatrix::from_dense(&x, n, nf).unwrap().with_labels(&y).unwrap()
+        DMatrix::from_dense(&x, n, nf)
+            .unwrap()
+            .with_labels(&y)
+            .unwrap()
     }
 
     #[test]
@@ -326,7 +350,10 @@ mod tests {
             let err = (s - margin[row] as f64).abs();
             max_err = max_err.max(err);
         }
-        assert!(max_err < 1e-4, "max additivity error {max_err} exceeded 1e-4");
+        assert!(
+            max_err < 1e-4,
+            "max additivity error {max_err} exceeded 1e-4"
+        );
     }
 
     #[test]
@@ -342,7 +369,10 @@ mod tests {
             }
             y[i] = (i % k) as f32;
         }
-        let d = DMatrix::from_dense(&x, n, nf).unwrap().with_labels(&y).unwrap();
+        let d = DMatrix::from_dense(&x, n, nf)
+            .unwrap()
+            .with_labels(&y)
+            .unwrap();
         let params = TrainingParams::builder()
             .objective("multi:softprob")
             .num_class(k)
@@ -367,7 +397,10 @@ mod tests {
                 max_err = max_err.max(err);
             }
         }
-        assert!(max_err < 1e-4, "max multiclass additivity error {max_err} exceeded 1e-4");
+        assert!(
+            max_err < 1e-4,
+            "max multiclass additivity error {max_err} exceeded 1e-4"
+        );
     }
 
     #[test]
@@ -385,7 +418,10 @@ mod tests {
             x[i * nf + 3] = 0.5; // constant -> never a useful split
             y[i] = 3.0 * x[i * nf] - 2.0 * x[i * nf + 1];
         }
-        let d = DMatrix::from_dense(&x, n, nf).unwrap().with_labels(&y).unwrap();
+        let d = DMatrix::from_dense(&x, n, nf)
+            .unwrap()
+            .with_labels(&y)
+            .unwrap();
         let params = TrainingParams::builder()
             .objective("reg:squarederror")
             .max_depth(4)
@@ -408,7 +444,9 @@ mod tests {
         for row in 0..n {
             max_abs = max_abs.max(contribs[row * width + 3].abs());
         }
-        assert!(max_abs < 1e-6, "unused feature contribution {max_abs} not ~0");
+        assert!(
+            max_abs < 1e-6,
+            "unused feature contribution {max_abs} not ~0"
+        );
     }
 }
-

@@ -49,9 +49,7 @@ impl GroupInfo {
 
     /// Iterate `(start, end)` row ranges, one per group.
     pub fn iter_ranges(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
-        self.group_ptr
-            .windows(2)
-            .map(|w| (w[0], w[1]))
+        self.group_ptr.windows(2).map(|w| (w[0], w[1]))
     }
 }
 

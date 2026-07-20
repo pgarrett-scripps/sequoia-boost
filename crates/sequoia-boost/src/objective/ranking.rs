@@ -40,7 +40,7 @@ enum RankMode {
 /// The LambdaMART pairwise ranking objective.
 ///
 /// Supports three XGBoost-compatible modes: `rank:pairwise`, `rank:ndcg`, and
-/// `rank:map`. See the [module documentation](self) for the algorithm.
+/// `rank:map`. See the module-level documentation for the algorithm.
 #[derive(Debug, Clone, Copy)]
 pub struct LambdaMartObjective {
     mode: RankMode,
@@ -106,7 +106,8 @@ impl LambdaMartObjective {
             1.0
         };
         // Deterministic per-group RNG seeded from the group size and layout.
-        let mut rng = SplitMix64::new(0x9E37_79B9_7F4A_7C15 ^ (start as u64).wrapping_mul(2654435761));
+        let mut rng =
+            SplitMix64::new(0x9E37_79B9_7F4A_7C15 ^ (start as u64).wrapping_mul(2654435761));
 
         for a in 0..m {
             for b in (a + 1)..m {
@@ -184,7 +185,13 @@ impl Objective for LambdaMartObjective {
         }
     }
 
-    fn gradient(&self, preds: &[f32], labels: &[f32], weights: Option<&[f32]>, out: &mut [GradPair]) {
+    fn gradient(
+        &self,
+        preds: &[f32],
+        labels: &[f32],
+        weights: Option<&[f32]>,
+        out: &mut [GradPair],
+    ) {
         // Without group info the whole batch is one query group.
         self.compute(preds, labels, weights, None, out);
     }

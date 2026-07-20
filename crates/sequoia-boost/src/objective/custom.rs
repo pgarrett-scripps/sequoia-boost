@@ -61,7 +61,13 @@ impl Objective for CustomObjective {
         self.n_outputs
     }
 
-    fn gradient(&self, preds: &[f32], labels: &[f32], weights: Option<&[f32]>, out: &mut [GradPair]) {
+    fn gradient(
+        &self,
+        preds: &[f32],
+        labels: &[f32],
+        weights: Option<&[f32]>,
+        out: &mut [GradPair],
+    ) {
         (self.grad_fn)(preds, labels, weights, out);
     }
 

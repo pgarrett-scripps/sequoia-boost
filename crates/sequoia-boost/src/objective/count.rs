@@ -31,7 +31,13 @@ impl Objective for PoissonObjective {
         "count:poisson"
     }
 
-    fn gradient(&self, preds: &[f32], labels: &[f32], weights: Option<&[f32]>, out: &mut [GradPair]) {
+    fn gradient(
+        &self,
+        preds: &[f32],
+        labels: &[f32],
+        weights: Option<&[f32]>,
+        out: &mut [GradPair],
+    ) {
         for i in 0..preds.len() {
             let w = weights.map_or(1.0, |ws| ws[i]);
             let em = preds[i].exp();
@@ -65,7 +71,13 @@ impl Objective for GammaObjective {
         "reg:gamma"
     }
 
-    fn gradient(&self, preds: &[f32], labels: &[f32], weights: Option<&[f32]>, out: &mut [GradPair]) {
+    fn gradient(
+        &self,
+        preds: &[f32],
+        labels: &[f32],
+        weights: Option<&[f32]>,
+        out: &mut [GradPair],
+    ) {
         for i in 0..preds.len() {
             let w = weights.map_or(1.0, |ws| ws[i]);
             let neg = (-preds[i]).exp();
@@ -110,7 +122,13 @@ impl Objective for TweedieObjective {
         "reg:tweedie"
     }
 
-    fn gradient(&self, preds: &[f32], labels: &[f32], weights: Option<&[f32]>, out: &mut [GradPair]) {
+    fn gradient(
+        &self,
+        preds: &[f32],
+        labels: &[f32],
+        weights: Option<&[f32]>,
+        out: &mut [GradPair],
+    ) {
         let rho = self.rho;
         for i in 0..preds.len() {
             let w = weights.map_or(1.0, |ws| ws[i]);

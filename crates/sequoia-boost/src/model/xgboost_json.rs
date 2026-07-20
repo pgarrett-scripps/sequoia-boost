@@ -57,7 +57,7 @@ const INVALID_NODE: i32 = i32::MAX;
 /// The result is a pretty-printed JSON string equivalent to what
 /// `xgboost.Booster.save_model("m.json")` produces for a `gbtree` model, and is
 /// accepted by [`import_xgboost_json`] as well as upstream XGBoost. See the
-/// [module docs](self) for the `base_score` space convention.
+/// module docs (above) for the `base_score` space convention.
 pub fn export_xgboost_json(model: &BoostedModel) -> Result<String> {
     let num_feature = model.n_features();
     let num_class = model.num_class();
@@ -75,7 +75,9 @@ pub fn export_xgboost_json(model: &BoostedModel) -> Result<String> {
     // `tree_info[t]` is the output group tree `t` contributes to. For scalar
     // objectives that is always 0; multiclass trees are laid out round-robin,
     // matching `BoostedModel`'s `t % n_outputs` convention.
-    let tree_info: Vec<Value> = (0..n_trees).map(|t| json!((t % n_outputs) as i32)).collect();
+    let tree_info: Vec<Value> = (0..n_trees)
+        .map(|t| json!((t % n_outputs) as i32))
+        .collect();
 
     let base_score = link_export(model.base_score(), &objective, num_class);
 
@@ -112,7 +114,7 @@ pub fn export_xgboost_json(model: &BoostedModel) -> Result<String> {
 /// Parse an XGBoost JSON model document into a [`BoostedModel`].
 ///
 /// Best-effort for `gbtree` boosters; other booster kinds produce a
-/// [`SequoiaError::ModelFormat`]. See the [module docs](self) for details and
+/// [`SequoiaError::ModelFormat`]. See the module docs (above) for details and
 /// the `base_score` space convention.
 pub fn import_xgboost_json(json: &str) -> Result<BoostedModel> {
     let root: Value = serde_json::from_str(json)?;
@@ -250,7 +252,8 @@ fn tree_to_json(id: usize, tree: &RegTree, num_feature: usize) -> Value {
 
 /// Decode one XGBoost tree object into a [`RegTree`].
 fn tree_from_json(tj: &Value) -> Result<RegTree> {
-    let left = arr(tj, "left_children", scalar_f64).ok_or_else(|| fmt_err("missing `left_children`"))?;
+    let left =
+        arr(tj, "left_children", scalar_f64).ok_or_else(|| fmt_err("missing `left_children`"))?;
     let n = left.len();
     let left: Vec<i32> = left.iter().map(|&v| v as i32).collect();
 
@@ -261,8 +264,8 @@ fn tree_from_json(tj: &Value) -> Result<RegTree> {
         .collect();
 
     let split_indices = arr(tj, "split_indices", scalar_f64).unwrap_or_default();
-    let split_conditions =
-        arr(tj, "split_conditions", scalar_f64).ok_or_else(|| fmt_err("missing `split_conditions`"))?;
+    let split_conditions = arr(tj, "split_conditions", scalar_f64)
+        .ok_or_else(|| fmt_err("missing `split_conditions`"))?;
     let default_left = arr(tj, "default_left", scalar_f64).unwrap_or_default();
     let base_weights = arr(tj, "base_weights", scalar_f64).unwrap_or_default();
     let sum_hessian = arr(tj, "sum_hessian", scalar_f64).unwrap_or_default();
@@ -533,7 +536,11 @@ mod tests {
         // Missing value follows default_left = true -> left leaf.
         let dm = DMatrix::from_dense(&[f32::NAN], 1, 1).unwrap();
         let mm = model.predict_margin(&dm);
-        assert!((mm[0] - 10.0).abs() < 1e-6, "missing routed wrong: {}", mm[0]);
+        assert!(
+            (mm[0] - 10.0).abs() < 1e-6,
+            "missing routed wrong: {}",
+            mm[0]
+        );
     }
 
     #[test]

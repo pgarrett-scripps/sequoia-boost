@@ -18,7 +18,9 @@ fn main() -> Result<()> {
     // A tiny deterministic LCG so the example needs no rng dependency.
     let mut state: u64 = 0x1234_5678;
     let mut next = || {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         ((state >> 33) as f32) / (1u32 << 31) as f32
     };
     for _ in 0..n_rows {

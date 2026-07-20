@@ -658,10 +658,18 @@ mod tests {
     fn map_hand_computed() {
         let m = MeanAveragePrecision::new(None);
         let labels = [1.0f32, 0.0, 1.0, 0.0]; // 2 relevant docs
-        // Order both relevant docs first -> AP = (1/1 + 2/2)/2 = 1.
-        assert_relative_eq!(m.eval(&[0.9, 0.1, 0.8, 0.2], &labels, None), 1.0, epsilon = 1e-9);
+                                              // Order both relevant docs first -> AP = (1/1 + 2/2)/2 = 1.
+        assert_relative_eq!(
+            m.eval(&[0.9, 0.1, 0.8, 0.2], &labels, None),
+            1.0,
+            epsilon = 1e-9
+        );
         // Relevant docs at ranks 2 and 4 -> AP = (1/2 + 2/4)/2 = 0.5.
-        assert_relative_eq!(m.eval(&[0.8, 0.9, 0.1, 0.7], &labels, None), 0.5, epsilon = 1e-9);
+        assert_relative_eq!(
+            m.eval(&[0.8, 0.9, 0.1, 0.7], &labels, None),
+            0.5,
+            epsilon = 1e-9
+        );
         assert!(m.maximize());
     }
 

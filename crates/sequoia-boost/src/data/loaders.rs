@@ -124,8 +124,7 @@ pub fn read_csv<R: Read>(reader: R, opts: &CsvOptions) -> Result<DMatrix> {
                 labels.push(label);
                 continue;
             }
-            let is_na = field.is_empty()
-                || opts.na_value.as_deref() == Some(field);
+            let is_na = field.is_empty() || opts.na_value.as_deref() == Some(field);
             let v = if is_na {
                 f32::NAN
             } else {

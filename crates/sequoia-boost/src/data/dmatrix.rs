@@ -74,7 +74,9 @@ impl DMatrix {
         missing: f32,
     ) -> Result<Self> {
         if n_rows == 0 || n_cols == 0 {
-            return Err(SequoiaError::EmptyDataset("from_dense: zero rows or columns"));
+            return Err(SequoiaError::EmptyDataset(
+                "from_dense: zero rows or columns",
+            ));
         }
         if data.len() != n_rows * n_cols {
             return Err(SequoiaError::DimensionMismatch {
@@ -511,7 +513,13 @@ mod tests {
         let d = sample_dense();
         let mut buf = Vec::new();
         d.row_into(1, &mut buf);
-        assert_eq!(buf, vec![Entry { index: 1, value: 5.0 }]);
+        assert_eq!(
+            buf,
+            vec![Entry {
+                index: 1,
+                value: 5.0
+            }]
+        );
     }
 
     #[test]

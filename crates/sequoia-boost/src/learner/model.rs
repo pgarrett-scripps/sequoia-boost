@@ -403,7 +403,10 @@ mod tests {
         let n = 60;
         let x: Vec<f32> = (0..n).map(|i| i as f32 / n as f32).collect();
         let y: Vec<f32> = x.iter().map(|&v| if v > 0.5 { 1.0 } else { 0.0 }).collect();
-        let d = DMatrix::from_dense(&x, n, 1).unwrap().with_labels(&y).unwrap();
+        let d = DMatrix::from_dense(&x, n, 1)
+            .unwrap()
+            .with_labels(&y)
+            .unwrap();
         let params = TrainingParams::builder()
             .objective("binary:logistic")
             .max_depth(3)

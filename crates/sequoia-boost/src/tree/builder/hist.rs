@@ -416,9 +416,7 @@ impl<'a> HistTreeBuilder<'a> {
                 let la = acc;
                 let ra = total.sub(acc);
                 if la.hess >= mcw && ra.hess >= mcw {
-                    self.consider(
-                        &mut best, la, ra, parent_gain, bounds, dir, f, i, false,
-                    );
+                    self.consider(&mut best, la, ra, parent_gain, bounds, dir, f, i, false);
                 }
 
                 // Direction B: missing -> left. Left = present-so-far + missing.
@@ -426,9 +424,7 @@ impl<'a> HistTreeBuilder<'a> {
                 lb.add(missing);
                 let rb = present.sub(acc);
                 if lb.hess >= mcw && rb.hess >= mcw {
-                    self.consider(
-                        &mut best, lb, rb, parent_gain, bounds, dir, f, i, true,
-                    );
+                    self.consider(&mut best, lb, rb, parent_gain, bounds, dir, f, i, true);
                 }
             }
         }
@@ -516,7 +512,16 @@ impl<'a> HistTreeBuilder<'a> {
             if left.hess < mcw || right.hess < mcw {
                 continue;
             }
-            self.consider_cat(best, left, right, parent_gain, bounds, dir, feature, &cats_left);
+            self.consider_cat(
+                best,
+                left,
+                right,
+                parent_gain,
+                bounds,
+                dir,
+                feature,
+                &cats_left,
+            );
         }
     }
 
@@ -617,7 +622,8 @@ mod tests {
             .gamma(0.0)
             .build()
             .unwrap();
-        let tree = HistTreeBuilder::new(&params).build(&ghist, &gpair, &all_rows(4), &all_features(1));
+        let tree =
+            HistTreeBuilder::new(&params).build(&ghist, &gpair, &all_rows(4), &all_features(1));
         assert_eq!(tree.num_nodes(), 3);
         assert!((tree.predict_row(&data, 0) - (-1.0)).abs() < 1e-6);
         assert!((tree.predict_row(&data, 2) - 1.0).abs() < 1e-6);
@@ -629,8 +635,13 @@ mod tests {
         let data = DMatrix::from_dense(&x, 2, 1).unwrap();
         let ghist = binned(&data, 256);
         let gpair = vec![gp(1.0, 1.0), gp(-1.0, 1.0)];
-        let params = TrainingParams::builder().max_depth(3).gamma(1e9).build().unwrap();
-        let tree = HistTreeBuilder::new(&params).build(&ghist, &gpair, &all_rows(2), &all_features(1));
+        let params = TrainingParams::builder()
+            .max_depth(3)
+            .gamma(1e9)
+            .build()
+            .unwrap();
+        let tree =
+            HistTreeBuilder::new(&params).build(&ghist, &gpair, &all_rows(2), &all_features(1));
         assert_eq!(tree.num_nodes(), 1);
     }
 
@@ -683,13 +694,17 @@ mod tests {
             .monotone_constraints(vec![Monotone::Increasing])
             .build()
             .unwrap();
-        let tree = HistTreeBuilder::new(&params).build(&ghist, &gpair, &all_rows(n), &all_features(1));
+        let tree =
+            HistTreeBuilder::new(&params).build(&ghist, &gpair, &all_rows(n), &all_features(1));
 
         // Predictions must be non-decreasing in x under the increasing constraint.
         let mut prev = f32::NEG_INFINITY;
         for (i, &xi) in x.iter().enumerate() {
             let p = tree.predict_row(&data, i);
-            assert!(p >= prev - 1e-5, "monotonicity violated at x={xi}: {p} < {prev}");
+            assert!(
+                p >= prev - 1e-5,
+                "monotonicity violated at x={xi}: {p} < {prev}"
+            );
             prev = p;
         }
     }
@@ -716,11 +731,18 @@ mod tests {
             .unwrap();
 
         let cols = SortedColumns::from_dmatrix(&data);
-        let exact = ExactTreeBuilder::new(&params).build(&cols, &data, &gpair, &all_rows(n), &all_features(1));
+        let exact = ExactTreeBuilder::new(&params).build(
+            &cols,
+            &data,
+            &gpair,
+            &all_rows(n),
+            &all_features(1),
+        );
 
         // 256 bins over 60 distinct values -> each value its own bin -> exact match.
         let ghist = binned(&data, 256);
-        let hist = HistTreeBuilder::new(&params).build(&ghist, &gpair, &all_rows(n), &all_features(1));
+        let hist =
+            HistTreeBuilder::new(&params).build(&ghist, &gpair, &all_rows(n), &all_features(1));
 
         for r in 0..n {
             let pe = exact.predict_row(&data, r);
