@@ -19,6 +19,14 @@ pub fn zeroed(total_bins: usize) -> Histogram {
     vec![GradStats::default(); total_bins]
 }
 
+/// Sibling histogram `parent − child`, allocated and filled in a single pass.
+/// Cheaper than `zeroed` + [`HistogramBackend::subtract`], which would zero the
+/// buffer only to overwrite every bin.
+pub fn subtracted(parent: &[GradStats], child: &[GradStats]) -> Histogram {
+    debug_assert_eq!(parent.len(), child.len());
+    parent.iter().zip(child).map(|(p, c)| p.sub(*c)).collect()
+}
+
 /// Backend that builds and combines gradient histograms.
 pub trait HistogramBackend: Send + Sync {
     /// Accumulate the gradients of `rows` into `out` (length = total bins).

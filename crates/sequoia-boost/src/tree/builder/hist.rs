@@ -13,7 +13,7 @@ use crate::tree::constraints::{
     calc_weight_bounded, child_bounds, gain_at_weight, satisfies, Bounds, MonotoneConstraints,
 };
 use crate::tree::gain::{calc_gain, GradStats, RegParams};
-use crate::tree::hist::{zeroed, CpuBackend, Histogram, HistogramBackend};
+use crate::tree::hist::{subtracted, zeroed, CpuBackend, Histogram, HistogramBackend};
 use crate::tree::regtree::RegTree;
 use crate::tree::sampler::ColumnSampler;
 use std::cmp::Ordering;
@@ -303,7 +303,7 @@ impl<'a> HistTreeBuilder<'a> {
         let mut left_rows = Vec::new();
         let mut right_rows = Vec::new();
         for &r in &entry.rows {
-            let go_left = match ghist.feature_bin(r as usize, fs, fe) {
+            let go_left = match ghist.feature_bin_at(r as usize, b.feature as usize, fs, fe) {
                 Some(bin) => {
                     if b.is_categorical {
                         let cv = cuts.cut_value(bin as usize) as u32;
@@ -323,17 +323,17 @@ impl<'a> HistTreeBuilder<'a> {
 
         let total_bins = entry.hist.len();
         // Build the smaller child directly; derive the sibling by subtraction.
+        // The sibling is produced by `subtracted`, which allocates-and-fills in
+        // one pass (no wasted zeroing, since subtraction overwrites every bin).
         let (left_hist, right_hist) = if left_rows.len() <= right_rows.len() {
             let mut lh = zeroed(total_bins);
             self.backend.build(ghist, &left_rows, gpair, &mut lh);
-            let mut rh = zeroed(total_bins);
-            self.backend.subtract(&entry.hist, &lh, &mut rh);
+            let rh = subtracted(&entry.hist, &lh);
             (lh, rh)
         } else {
             let mut rh = zeroed(total_bins);
             self.backend.build(ghist, &right_rows, gpair, &mut rh);
-            let mut lh = zeroed(total_bins);
-            self.backend.subtract(&entry.hist, &rh, &mut lh);
+            let lh = subtracted(&entry.hist, &rh);
             (lh, rh)
         };
 

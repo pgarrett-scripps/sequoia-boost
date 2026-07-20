@@ -33,21 +33,31 @@ pub enum Bins<'a> {
 #[derive(Debug, Clone)]
 pub struct GHistIndex {
     n_rows: usize,
+    n_cols: usize,
     row_ptr: Vec<usize>,
     store: BinStore,
     cuts: HistCuts,
+    /// True when every row is complete and in ascending feature order (a dense
+    /// matrix with no missing values). Then feature `f` of row `r` is at offset
+    /// `row_ptr[r] + f`, so routing needs no per-row scan.
+    dense: bool,
 }
 
 impl GHistIndex {
     /// Bin a dataset against precomputed cuts.
     pub fn from_dmatrix(data: &DMatrix, cuts: HistCuts) -> Self {
         let n_rows = data.n_rows();
+        let n_cols = cuts.n_features();
         let mut row_ptr = Vec::with_capacity(n_rows + 1);
         row_ptr.push(0usize);
         let mut bins: Vec<u32> = Vec::new();
         let mut row: Vec<Entry> = Vec::new();
+        let mut dense = true;
         for r in 0..n_rows {
             data.row_into(r, &mut row);
+            // Dense iff every row lists all features in ascending index order.
+            dense &=
+                row.len() == n_cols && row.iter().enumerate().all(|(c, e)| e.index as usize == c);
             for e in &row {
                 bins.push(cuts.bin_of(e.index as usize, e.value));
             }
@@ -63,9 +73,11 @@ impl GHistIndex {
 
         GHistIndex {
             n_rows,
+            n_cols,
             row_ptr,
             store,
             cuts,
+            dense,
         }
     }
 
@@ -73,6 +85,12 @@ impl GHistIndex {
     #[inline]
     pub fn n_rows(&self) -> usize {
         self.n_rows
+    }
+
+    /// Number of feature columns.
+    #[inline]
+    pub fn n_cols(&self) -> usize {
+        self.n_cols
     }
 
     /// The cut table this index was built against.
@@ -107,6 +125,22 @@ impl GHistIndex {
     #[inline]
     pub fn row_len(&self, r: usize) -> usize {
         self.row_ptr[r + 1] - self.row_ptr[r]
+    }
+
+    /// The global bin of `feature` (with global bin range `[fs, fe)`) in row `r`,
+    /// or `None` if missing. Uses an O(1) direct index for dense datasets and
+    /// falls back to a per-row scan otherwise.
+    #[inline]
+    pub fn feature_bin_at(&self, r: usize, feature: usize, fs: usize, fe: usize) -> Option<u32> {
+        if self.dense {
+            let idx = self.row_ptr[r] + feature;
+            let b = match &self.store {
+                BinStore::U16(v) => v[idx] as u32,
+                BinStore::U32(v) => v[idx],
+            };
+            return Some(b); // dense entry at offset `feature` is that feature's bin
+        }
+        self.feature_bin(r, fs, fe)
     }
 
     /// The global bin of `feature` (whose global bin range is `[fs, fe)`) in row
