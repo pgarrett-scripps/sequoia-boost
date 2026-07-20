@@ -77,32 +77,38 @@ fn main() -> Result<()> {
 
 A fair comparison against real XGBoost 3.3 — the **same** little-endian `f32`
 bytes fed to both engines, matching `hist` parameters, end-to-end fit timing
-(binning + training), best-of-3. Dataset: 100k rows × 30 features, 100 rounds,
-depth 6, `max_bin=256`, `eta=0.1`, `lambda=1`.
+(binning + training), best-of-3, **single-threaded**. Dataset: 100k rows × 30
+features, 100 rounds, depth 6, `max_bin=256`, `eta=0.1`, `lambda=1`.
 
-| Threads | sequoia-boost | XGBoost 3.3 | sequoia RMSE | XGBoost RMSE |
-|--------:|--------------:|------------:|-------------:|-------------:|
-| 1       | **5.46 s**    | 5.36 s      | 0.05650      | 0.05685      |
-| 20      | 23.65 s       | 26.09 s     | 0.05650      | 0.05685      |
+| Engine | fit time | train RMSE |
+|--------|---------:|-----------:|
+| sequoia-boost | **~1.77 s** | 0.05650 |
+| XGBoost 3.3   | ~1.30 s     | 0.05685 |
 
-**Single-threaded, sequoia-boost is within ~2% of XGBoost's speed and matches
-its accuracy** on this workload — despite using no explicit SIMD (XGBoost is
-heavily SIMD-optimized). The 20-thread row is *not* meaningful: both engines
-regress ~5× at 20 threads in the sandbox this was measured in, so it reflects
-the machine's inability to deliver real 20-way parallelism, not either library.
-Trustworthy multi-core scaling numbers require bare-metal, isolated cores.
+sequoia-boost is roughly **1.35× the wall-clock of XGBoost single-threaded**,
+with matching accuracy — a solid result for a pure-Rust engine with **no explicit
+SIMD** against XGBoost's heavily hand-optimized C++. Profiling drove a ~26%
+speedup in split evaluation (see `examples/profile.rs`); the remaining gap is
+largely XGBoost's SIMD and cache-tuned kernels.
 
-Caveats: this is one dataset shape (moderate width). XGBoost typically pulls
-ahead on wider data, deeper trees, and genuine multi-core hardware where its
-tuned parallelism and SIMD pay off. Treat this as "tied single-threaded on this
-benchmark," not a universal claim.
+Caveats worth stating plainly:
+
+- **Timings are machine-load sensitive** — these are quiet-machine numbers.
+- **Multi-core is not benchmarked** here: the sandbox couldn't deliver real
+  parallel throughput (both engines regressed identically at high thread counts),
+  so honest scaling numbers need bare-metal, isolated cores.
+- One dataset shape (moderate width). XGBoost tends to pull further ahead on
+  wider data and deeper trees where its SIMD kernels dominate.
 
 Reproduce:
 
 ```sh
-python scripts/bench_xgb.py <bench_dir> 100000 30 100 1 20   # writes data + times XGBoost
+python scripts/bench_xgb.py <bench_dir> 100000 30 100 1   # writes data + times XGBoost
 BENCH_DIR=<bench_dir> RAYON_NUM_THREADS=1 \
   cargo run --release -p sequoia-boost --example bench_compare
+# phase-level profiler:
+BENCH_DIR=<bench_dir> RAYON_NUM_THREADS=1 \
+  cargo run --release -p sequoia-boost --example profile
 ```
 
 ### Internal micro-benchmarks
