@@ -1,0 +1,40 @@
+[package]
+name = "sequoia-boost"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
+
+[lib]
+name = "sequoia_boost"
+path = "src/lib.rs"
+
+[dependencies]
+rayon = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+bincode = { workspace = true }
+num-traits = { workspace = true }
+rand = { workspace = true }
+rand_pcg = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+proptest = { workspace = true }
+approx = { workspace = true }
+
+[features]
+default = []
+# Reserved for a future GPU histogram backend; keeps the trait seam explicit.
+gpu = []
+
+[[bench]]
+name = "training"
+harness = false
