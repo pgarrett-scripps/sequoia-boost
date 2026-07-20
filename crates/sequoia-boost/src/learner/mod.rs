@@ -3,6 +3,7 @@
 
 mod cv;
 mod model;
+mod shap;
 mod train;
 
 pub use cv::{cv, CvResult};
