@@ -6,7 +6,7 @@
 //! partial histograms and reduce them, and provides the *subtraction trick*
 //! (`sibling = parent − child`) that halves histogram construction cost.
 
-use crate::data::ghist::GHistIndex;
+use crate::data::ghist::{Bins, GHistIndex};
 use crate::objective::GradPair;
 use crate::tree::gain::GradStats;
 use rayon::prelude::*;
@@ -40,21 +40,27 @@ pub trait HistogramBackend: Send + Sync {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CpuBackend;
 
-/// Below this row count the sequential path avoids rayon overhead.
-const PARALLEL_THRESHOLD: usize = 4096;
+/// Go parallel only for nodes large enough that the per-chunk histogram
+/// allocation and reduction pay for themselves. Below this the reduction
+/// overhead (proportional to `threads × total_bins`) dominates the actual work,
+/// so the sequential path is faster — which is most nodes in a deep tree.
+const PARALLEL_THRESHOLD: usize = 32_768;
 
 impl HistogramBackend for CpuBackend {
     fn build(&self, ghist: &GHistIndex, rows: &[u32], gpair: &[GradPair], out: &mut [GradStats]) {
         let total = out.len();
         out.iter_mut().for_each(|s| *s = GradStats::default());
 
-        if rows.len() < PARALLEL_THRESHOLD {
+        let threads = rayon::current_num_threads();
+        if threads <= 1 || rows.len() < PARALLEL_THRESHOLD {
             accumulate(ghist, rows, gpair, out);
             return;
         }
 
         // Parallel: each chunk builds a private histogram; reduce by summation.
-        let grain = (rows.len() / rayon::current_num_threads().max(1)).max(1);
+        // One chunk per thread keeps the number of (allocate + reduce) pairs
+        // minimal.
+        let grain = rows.len().div_ceil(threads);
         let partial = rows
             .par_chunks(grain)
             .map(|chunk| {
@@ -75,15 +81,31 @@ impl HistogramBackend for CpuBackend {
     }
 }
 
-/// Sequential accumulation of `rows` into `out` (added, not reset).
+/// Sequential accumulation of `rows` into `out` (added, not reset). Specialized
+/// on the bin-index width so the inner loop reads the narrowest integers.
 #[inline]
 fn accumulate(ghist: &GHistIndex, rows: &[u32], gpair: &[GradPair], out: &mut [GradStats]) {
-    for &r in rows {
-        let ri = r as usize;
-        let gp = gpair[ri];
-        let g = GradStats::new(gp.grad as f64, gp.hess as f64);
-        for &bin in ghist.row_bins(ri) {
-            out[bin as usize].add(g);
+    let rp = ghist.row_ptr();
+    match ghist.bins() {
+        Bins::U16(bins) => {
+            for &r in rows {
+                let ri = r as usize;
+                let gp = gpair[ri];
+                let g = GradStats::new(gp.grad as f64, gp.hess as f64);
+                for &bin in &bins[rp[ri]..rp[ri + 1]] {
+                    out[bin as usize].add(g);
+                }
+            }
+        }
+        Bins::U32(bins) => {
+            for &r in rows {
+                let ri = r as usize;
+                let gp = gpair[ri];
+                let g = GradStats::new(gp.grad as f64, gp.hess as f64);
+                for &bin in &bins[rp[ri]..rp[ri + 1]] {
+                    out[bin as usize].add(g);
+                }
+            }
         }
     }
 }

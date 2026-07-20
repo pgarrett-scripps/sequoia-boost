@@ -303,7 +303,7 @@ impl<'a> HistTreeBuilder<'a> {
         let mut left_rows = Vec::new();
         let mut right_rows = Vec::new();
         for &r in &entry.rows {
-            let go_left = match row_feature_bin(ghist, r as usize, fs, fe) {
+            let go_left = match ghist.feature_bin(r as usize, fs, fe) {
                 Some(bin) => {
                     if b.is_categorical {
                         let cv = cuts.cut_value(bin as usize) as u32;
@@ -584,19 +584,6 @@ impl NodeStore {
         self.stats.push(stats);
         self.bounds.push(bounds);
     }
-}
-
-/// Find the global bin of `feature` (range `[fs, fe)`) in row `r`, or `None`
-/// when that feature is missing for the row.
-#[inline]
-fn row_feature_bin(ghist: &GHistIndex, r: usize, fs: usize, fe: usize) -> Option<u32> {
-    for &bin in ghist.row_bins(r) {
-        let b = bin as usize;
-        if b >= fs && b < fe {
-            return Some(bin);
-        }
-    }
-    None
 }
 
 #[cfg(test)]
