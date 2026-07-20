@@ -289,6 +289,9 @@ fn tree_from_json(tj: &Value) -> Result<RegTree> {
                 leaf_value,
                 sum_hess,
                 split_gain: 0.0,
+                is_categorical: false,
+                cat_begin: 0,
+                cat_end: 0,
             });
         } else {
             nodes.push(Node {
@@ -300,6 +303,9 @@ fn tree_from_json(tj: &Value) -> Result<RegTree> {
                 leaf_value: 0.0,
                 sum_hess,
                 split_gain: at(&loss_changes, i) as f32,
+                is_categorical: false,
+                cat_begin: 0,
+                cat_end: 0,
             });
         }
     }

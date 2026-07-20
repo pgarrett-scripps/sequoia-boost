@@ -21,11 +21,11 @@ use std::collections::BinaryHeap;
 const K_RT_EPS: f64 = 1e-6;
 
 /// The best split found for a node, in bin space.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct BestSplit {
     loss_chg: f64,
     feature: u32,
-    /// Global bin index `i`: instances with bin ≤ `i` go left.
+    /// Global bin index `i`: instances with bin ≤ `i` go left (numeric splits).
     split_bin: usize,
     default_left: bool,
     left: GradStats,
@@ -33,6 +33,10 @@ struct BestSplit {
     /// Bounded child weights (used to derive monotone child bounds).
     w_left: f64,
     w_right: f64,
+    /// Whether this is a categorical (set-membership) split.
+    is_categorical: bool,
+    /// For a categorical split, the category values routed left.
+    cat_left: Vec<u32>,
 }
 
 impl BestSplit {
@@ -46,6 +50,8 @@ impl BestSplit {
             right: GradStats::default(),
             w_left: 0.0,
             w_right: 0.0,
+            is_categorical: false,
+            cat_left: Vec::new(),
         }
     }
 
@@ -254,35 +260,55 @@ impl<'a> HistTreeBuilder<'a> {
         entry: NodeEntry,
     ) -> (NodeEntry, NodeEntry) {
         let cuts = ghist.cuts();
-        let b = entry.best;
-        let threshold = cuts.cut_value(b.split_bin);
+        let b = &entry.best;
 
         // Monotone child bounds derived from the (bounded) child weights.
         let dir = self.cons.dir(b.feature as usize);
         let (lb_bounds, rb_bounds) = child_bounds(entry.bounds, dir, b.w_left, b.w_right);
 
-        let (left_id, right_id) = tree.expand(
-            entry.nid,
-            b.feature,
-            threshold,
-            b.default_left,
-            b.w_left as f32,
-            b.left.hess as f32,
-            b.w_right as f32,
-            b.right.hess as f32,
-        );
+        let (fs, fe) = cuts.feature_bins(b.feature as usize);
+        let (left_id, right_id) = if b.is_categorical {
+            tree.expand_categorical(
+                entry.nid,
+                b.feature,
+                &b.cat_left,
+                b.default_left,
+                b.w_left as f32,
+                b.left.hess as f32,
+                b.w_right as f32,
+                b.right.hess as f32,
+            )
+        } else {
+            let threshold = cuts.cut_value(b.split_bin);
+            tree.expand(
+                entry.nid,
+                b.feature,
+                threshold,
+                b.default_left,
+                b.w_left as f32,
+                b.left.hess as f32,
+                b.w_right as f32,
+                b.right.hess as f32,
+            )
+        };
         tree.set_split_gain(entry.nid, b.loss_chg as f32);
         debug_assert_eq!(left_id, store.stats.len());
         store.push(b.left, lb_bounds);
         store.push(b.right, rb_bounds);
 
         // Partition rows using the binned index.
-        let (fs, fe) = cuts.feature_bins(b.feature as usize);
         let mut left_rows = Vec::new();
         let mut right_rows = Vec::new();
         for &r in &entry.rows {
             let go_left = match row_feature_bin(ghist, r as usize, fs, fe) {
-                Some(bin) => (bin as usize) <= b.split_bin,
+                Some(bin) => {
+                    if b.is_categorical {
+                        let cv = cuts.cut_value(bin as usize) as u32;
+                        b.cat_left.contains(&cv)
+                    } else {
+                        (bin as usize) <= b.split_bin
+                    }
+                }
                 None => b.default_left,
             };
             if go_left {
@@ -355,6 +381,22 @@ impl<'a> HistTreeBuilder<'a> {
             }
             let dir = self.cons.dir(f as usize);
 
+            if cuts.is_categorical(f as usize) {
+                self.evaluate_categorical(
+                    &mut best,
+                    cuts,
+                    hist,
+                    total,
+                    parent_gain,
+                    bounds,
+                    dir,
+                    f,
+                    fs,
+                    fe,
+                );
+                continue;
+            }
+
             // Present statistics for this feature (sum over its bins).
             let mut present = GradStats::default();
             for &h in &hist[fs..fe] {
@@ -426,6 +468,94 @@ impl<'a> HistTreeBuilder<'a> {
                 right,
                 w_left: wl,
                 w_right: wr,
+                is_categorical: false,
+                cat_left: Vec::new(),
+            };
+        }
+    }
+
+    /// Find the best categorical (set-membership) split for one feature.
+    ///
+    /// Follows XGBoost's sorted-partition strategy: rank the feature's category
+    /// bins by their gradient/Hessian ratio, then sweep prefix partitions of that
+    /// order. This yields the optimal two-set partition under the standard result
+    /// that sorting by the score ratio makes the best subset contiguous. The
+    /// prefix categories form the "left" set; every other (and missing) category
+    /// goes right.
+    #[allow(clippy::too_many_arguments)]
+    fn evaluate_categorical(
+        &self,
+        best: &mut BestSplit,
+        cuts: &HistCuts,
+        hist: &[GradStats],
+        total: GradStats,
+        parent_gain: f64,
+        bounds: Bounds,
+        dir: i8,
+        feature: u32,
+        fs: usize,
+        fe: usize,
+    ) {
+        let mcw = self.reg.min_child_weight;
+        // Only non-empty category bins can move; sort them by grad/hess ratio.
+        let mut order: Vec<usize> = (fs..fe).filter(|&i| hist[i].hess > 0.0).collect();
+        if order.len() < 2 {
+            return;
+        }
+        let ratio = |s: GradStats| s.grad / (s.hess + self.reg.lambda);
+        order.sort_by(|&a, &b| ratio(hist[a]).total_cmp(&ratio(hist[b])));
+
+        let mut left = GradStats::default();
+        let mut cats_left: Vec<u32> = Vec::new();
+        // Sweep prefixes, always leaving at least one category on the right.
+        for &bin in &order[..order.len() - 1] {
+            left.add(hist[bin]);
+            cats_left.push(cuts.cut_value(bin) as u32);
+            // `total` includes any missing mass, which stays on the right.
+            let right = total.sub(left);
+            if left.hess < mcw || right.hess < mcw {
+                continue;
+            }
+            self.consider_cat(best, left, right, parent_gain, bounds, dir, feature, &cats_left);
+        }
+    }
+
+    /// Evaluate one categorical candidate (left = `cats_left`, rest = right) and
+    /// update `best` if it improves. Mirrors [`Self::consider`] but records the
+    /// category set instead of a bin threshold.
+    #[allow(clippy::too_many_arguments)]
+    fn consider_cat(
+        &self,
+        best: &mut BestSplit,
+        left: GradStats,
+        right: GradStats,
+        parent_gain: f64,
+        bounds: Bounds,
+        dir: i8,
+        feature: u32,
+        cats_left: &[u32],
+    ) {
+        let wl = calc_weight_bounded(left, &self.reg, bounds);
+        let wr = calc_weight_bounded(right, &self.reg, bounds);
+        if !satisfies(dir, wl, wr) {
+            return; // monotone constraint violated
+        }
+        let g = gain_at_weight(left, &self.reg, wl) + gain_at_weight(right, &self.reg, wr)
+            - parent_gain;
+        if g > best.loss_chg + K_RT_EPS {
+            *best = BestSplit {
+                loss_chg: g,
+                feature,
+                split_bin: 0,
+                // Present categories not in the left set go right; route missing
+                // right as well (XGBoost's default for categorical features).
+                default_left: false,
+                left,
+                right,
+                w_left: wl,
+                w_right: wr,
+                is_categorical: true,
+                cat_left: cats_left.to_vec(),
             };
         }
     }

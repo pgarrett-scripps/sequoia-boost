@@ -318,6 +318,10 @@ impl TrainingParamsBuilder {
         grow_policy, GrowPolicy);
     setter!(/// Set the maximum histogram bins per feature.
         max_bin, usize);
+    setter!(/// Set the DART per-round drop rate (`rate_drop`).
+        rate_drop, f64);
+    setter!(/// Set the DART dropout-skip probability (`skip_drop`).
+        skip_drop, f64);
 
     /// Set the objective by name (e.g. `"binary:logistic"`).
     pub fn objective(mut self, name: impl Into<String>) -> Self {

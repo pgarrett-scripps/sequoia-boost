@@ -39,6 +39,12 @@ pub struct BoostedModel {
     n_features: usize,
     /// The best iteration index selected by early stopping, if any.
     best_iteration: Option<usize>,
+    /// Per-tree contribution weights. For a plain `gbtree` model every weight is
+    /// `1.0`; the DART booster stores fractional weights here so dropped trees
+    /// can be rescaled. Defaults to empty for models serialized before this
+    /// field existed, in which case every tree is treated as weight `1.0`.
+    #[serde(default)]
+    tree_weights: Vec<f32>,
 }
 
 impl BoostedModel {
@@ -55,11 +61,54 @@ impl BoostedModel {
             num_class,
             n_features,
             best_iteration: None,
+            tree_weights: Vec::new(),
         }
     }
 
     pub(crate) fn push_tree(&mut self, tree: RegTree) {
         self.trees.push(tree);
+        self.tree_weights.push(1.0);
+    }
+
+    /// Append a tree with an explicit contribution weight (used by DART).
+    pub(crate) fn push_tree_weighted(&mut self, tree: RegTree, weight: f32) {
+        self.trees.push(tree);
+        self.tree_weights.push(weight);
+    }
+
+    /// Contribution weight of tree `i` (`1.0` when weights are absent, e.g. for
+    /// legacy models or plain `gbtree`).
+    #[inline]
+    pub(crate) fn tree_weight(&self, i: usize) -> f32 {
+        self.tree_weights.get(i).copied().unwrap_or(1.0)
+    }
+
+    /// Multiply tree `i`'s contribution weight by `factor` (DART rescaling).
+    pub(crate) fn scale_tree_weight(&mut self, i: usize, factor: f32) {
+        if i < self.tree_weights.len() {
+            self.tree_weights[i] *= factor;
+        }
+    }
+
+    /// Raw margin predictions that exclude the trees marked `true` in `dropped`
+    /// (indexed by tree id). Used by the DART training loop to compute a round's
+    /// gradients from the ensemble minus its dropout set. Output is laid out
+    /// `[instance][output]`.
+    pub(crate) fn predict_margin_dropout(&self, data: &DMatrix, dropped: &[bool]) -> Vec<f32> {
+        let n = data.n_rows();
+        let k = self.n_outputs();
+        let mut out = vec![self.base_score; n * k];
+        for (ti, tree) in self.trees.iter().enumerate() {
+            if dropped.get(ti).copied().unwrap_or(false) {
+                continue;
+            }
+            let w = self.tree_weight(ti);
+            let cls = ti % k;
+            for row in 0..n {
+                out[row * k + cls] += w * tree.predict_row(data, row);
+            }
+        }
+        out
     }
 
     pub(crate) fn set_best_iteration(&mut self, it: Option<usize>) {
@@ -75,6 +124,7 @@ impl BoostedModel {
         num_class: usize,
         n_features: usize,
     ) -> Self {
+        let tree_weights = vec![1.0; trees.len()];
         BoostedModel {
             trees,
             base_score,
@@ -82,6 +132,7 @@ impl BoostedModel {
             num_class,
             n_features,
             best_iteration: None,
+            tree_weights,
         }
     }
 
@@ -153,9 +204,10 @@ impl BoostedModel {
         };
         let mut out = vec![self.base_score; n * k];
         for (ti, tree) in self.trees[..limit].iter().enumerate() {
+            let w = self.tree_weight(ti);
             let cls = ti % k;
             for row in 0..n {
-                out[row * k + cls] += tree.predict_row(data, row);
+                out[row * k + cls] += w * tree.predict_row(data, row);
             }
         }
         out
