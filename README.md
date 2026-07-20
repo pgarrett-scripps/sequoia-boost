@@ -73,15 +73,41 @@ fn main() -> Result<()> {
 
 ## Performance
 
-The histogram method is the fast path. On a synthetic 100k × 30 regression set,
-training 50 depth-6 trees:
+### Head-to-head vs XGBoost
 
-| Method  | Time   |
-|---------|--------|
-| `hist`  | ~1.8 s |
-| `exact` | ~20 s  |
+A fair comparison against real XGBoost 3.3 — the **same** little-endian `f32`
+bytes fed to both engines, matching `hist` parameters, end-to-end fit timing
+(binning + training), best-of-3. Dataset: 100k rows × 30 features, 100 rounds,
+depth 6, `max_bin=256`, `eta=0.1`, `lambda=1`.
 
-Run the benchmarks yourself:
+| Threads | sequoia-boost | XGBoost 3.3 | sequoia RMSE | XGBoost RMSE |
+|--------:|--------------:|------------:|-------------:|-------------:|
+| 1       | **5.46 s**    | 5.36 s      | 0.05650      | 0.05685      |
+| 20      | 23.65 s       | 26.09 s     | 0.05650      | 0.05685      |
+
+**Single-threaded, sequoia-boost is within ~2% of XGBoost's speed and matches
+its accuracy** on this workload — despite using no explicit SIMD (XGBoost is
+heavily SIMD-optimized). The 20-thread row is *not* meaningful: both engines
+regress ~5× at 20 threads in the sandbox this was measured in, so it reflects
+the machine's inability to deliver real 20-way parallelism, not either library.
+Trustworthy multi-core scaling numbers require bare-metal, isolated cores.
+
+Caveats: this is one dataset shape (moderate width). XGBoost typically pulls
+ahead on wider data, deeper trees, and genuine multi-core hardware where its
+tuned parallelism and SIMD pay off. Treat this as "tied single-threaded on this
+benchmark," not a universal claim.
+
+Reproduce:
+
+```sh
+python scripts/bench_xgb.py <bench_dir> 100000 30 100 1 20   # writes data + times XGBoost
+BENCH_DIR=<bench_dir> RAYON_NUM_THREADS=1 \
+  cargo run --release -p sequoia-boost --example bench_compare
+```
+
+### Internal micro-benchmarks
+
+Criterion benchmarks for the hot paths (histogram build, exact vs hist training):
 
 ```sh
 cargo bench -p sequoia-boost
