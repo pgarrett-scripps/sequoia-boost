@@ -37,6 +37,7 @@ pub mod data;
 pub mod error;
 pub mod learner;
 pub mod metric;
+pub mod model;
 pub mod objective;
 pub mod tree;
 
