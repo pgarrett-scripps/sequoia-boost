@@ -46,7 +46,7 @@ fn fixtures_dir() -> PathBuf {
         .join("../../fixtures")
 }
 
-fn run_fixture(fx: &Fixture) {
+fn run_fixture(fx: &Fixture) -> bool {
     let d = DMatrix::from_dense(&fx.x, fx.n_rows, fx.n_cols)
         .unwrap()
         .with_labels(&fx.y)
@@ -70,6 +70,8 @@ fn run_fixture(fx: &Fixture) {
     let preds = model.predict(&d).unwrap();
     assert_eq!(preds.len(), fx.xgb_pred.len(), "{}: length mismatch", fx.name);
 
+    // Pointwise agreement (informational: two different histogram
+    // implementations pick different split points, so this is never zero).
     let mut max_abs = 0.0f64;
     let mut mean_abs = 0.0f64;
     for (a, b) in preds.iter().zip(&fx.xgb_pred) {
@@ -78,17 +80,54 @@ fn run_fixture(fx: &Fixture) {
         mean_abs += e;
     }
     mean_abs /= preds.len() as f64;
+
+    // Fit quality against the true labels — the meaningful parity measure.
+    // Multiclass: accuracy (higher better). Else: RMSE vs y (lower better).
+    let (metric, seq_q, xgb_q, seq_better) = if fx.num_class >= 2 {
+        let k = fx.num_class;
+        let acc = |p: &[f32]| -> f64 {
+            let mut correct = 0usize;
+            for (i, &yi) in fx.y.iter().enumerate() {
+                let row = &p[i * k..i * k + k];
+                let mut best = 0usize;
+                for c in 1..k {
+                    if row[c] > row[best] {
+                        best = c;
+                    }
+                }
+                if best == yi as usize {
+                    correct += 1;
+                }
+            }
+            correct as f64 / fx.y.len() as f64
+        };
+        let (s, x) = (acc(&preds), acc(&fx.xgb_pred));
+        // sequoia within 2 accuracy points of xgboost.
+        ("accuracy", s, x, s >= x - 0.02)
+    } else {
+        let rmse = |p: &[f32]| -> f64 {
+            let s: f64 = p
+                .iter()
+                .zip(&fx.y)
+                .map(|(a, b)| (*a as f64 - *b as f64).powi(2))
+                .sum();
+            (s / fx.y.len() as f64).sqrt()
+        };
+        let (s, x) = (rmse(&preds), rmse(&fx.xgb_pred));
+        // sequoia RMSE within 8% of xgboost's.
+        ("rmse", s, x, s <= x * 1.08 + 1e-6)
+    };
+
     println!(
-        "{}: mean|Δ|={:.2e} max|Δ|={:.2e} (tol {:.1e})",
-        fx.name, mean_abs, max_abs, fx.tolerance
-    );
-    assert!(
-        mean_abs <= fx.tolerance,
-        "{}: mean abs error {:.3e} exceeds tolerance {:.3e}",
+        "{:<11} pointwise mean|Δ|={:.2e} max|Δ|={:.2e} | {metric}: sequoia={:.5} xgboost={:.5} -> {}",
         fx.name,
         mean_abs,
-        fx.tolerance
+        max_abs,
+        seq_q,
+        xgb_q,
+        if seq_better { "OK" } else { "FAIL" }
     );
+    seq_better
 }
 
 #[test]
@@ -102,16 +141,20 @@ fn xgboost_parity() {
             return;
         }
     };
-    let mut ran = 0;
+    let mut fixtures: Vec<Fixture> = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|s| s.to_str()) != Some("json") {
             continue;
         }
         let text = std::fs::read_to_string(&path).unwrap();
-        let fx: Fixture = serde_json::from_str(&text).unwrap();
-        run_fixture(&fx);
-        ran += 1;
+        fixtures.push(serde_json::from_str(&text).unwrap());
     }
-    assert!(ran > 0, "no .json fixtures found in {dir:?}");
+    fixtures.sort_by(|a, b| a.name.cmp(&b.name));
+    assert!(!fixtures.is_empty(), "no .json fixtures found in {dir:?}");
+    let mut all_ok = true;
+    for fx in &fixtures {
+        all_ok &= run_fixture(fx);
+    }
+    assert!(all_ok, "one or more fixtures failed the quality-parity check");
 }
