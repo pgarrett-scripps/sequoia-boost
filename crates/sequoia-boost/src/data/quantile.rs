@@ -69,6 +69,58 @@ impl HistCuts {
         }
     }
 
+    /// Compute **hessian-weighted** cuts, as XGBoost's `tree_method=approx` does
+    /// each boosting round.
+    ///
+    /// Identical to [`HistCuts::from_dmatrix`] except that, for numeric features,
+    /// every instance's feature value contributes its Hessian `hessians[row]` as
+    /// weight when locating the quantile cut points (accumulate weight per sorted
+    /// value, place cuts at weighted quantiles). Categorical features are binned
+    /// exactly as in [`HistCuts::from_dmatrix`] (one bin per category). `hessians`
+    /// is indexed by original row and must cover every row of `data`.
+    pub fn from_dmatrix_weighted(data: &DMatrix, max_bin: usize, hessians: &[f32]) -> Self {
+        let csc = data.to_csc();
+        let n_features = csc.n_cols();
+        let ftypes = data.feature_types();
+        let mut feature_offset = Vec::with_capacity(n_features + 1);
+        feature_offset.push(0u32);
+        let mut cut_values: Vec<f32> = Vec::new();
+        let mut is_categorical = vec![false; n_features];
+
+        let mut cat_scratch: Vec<f32> = Vec::new();
+        let mut scratch: Vec<(f32, f32)> = Vec::new();
+        #[allow(clippy::needless_range_loop)]
+        for f in 0..n_features {
+            let (rows, vals) = csc.column(f);
+            if ftypes.get(f).copied() == Some(FeatureType::Categorical) {
+                // Categorical binning ignores weights (one bin per category).
+                is_categorical[f] = true;
+                cat_scratch.clear();
+                cat_scratch.extend_from_slice(vals);
+                cat_scratch.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                build_categorical_cuts(&cat_scratch, &mut cut_values);
+            } else {
+                // Pair each value with its instance's Hessian, then sort by value.
+                scratch.clear();
+                scratch.extend(
+                    rows.iter()
+                        .zip(vals)
+                        .map(|(&r, &v)| (v, hessians[r as usize])),
+                );
+                scratch.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+                build_feature_cuts_weighted(&scratch, max_bin, &mut cut_values);
+            }
+            feature_offset.push(cut_values.len() as u32);
+        }
+
+        HistCuts {
+            n_features,
+            feature_offset,
+            cut_values,
+            is_categorical,
+        }
+    }
+
     /// Whether feature `f` is categorical (bins map one category value each).
     #[inline]
     pub fn is_categorical(&self, f: usize) -> bool {
@@ -188,12 +240,86 @@ fn build_feature_cuts(sorted_vals: &[f32], max_bin: usize, out: &mut Vec<f32>) {
             }
         }
     }
-    // Append a sentinel just above the maximum so the max value lands in the
-    // final real bin rather than colliding under the clamp.
+    push_max_sentinel(out, max_val);
+    debug_assert!(out.len() > start);
+}
+
+/// Append feature cut values (ascending) for one numeric feature using
+/// **hessian-weighted** quantiles: `sorted` holds ascending `(value, weight)`
+/// pairs and each value contributes its weight when locating the quantile
+/// boundaries. Mirrors [`build_feature_cuts`] — the empty-input guard, the
+/// few-distinct-values shortcut, and the trailing sentinel are identical, and
+/// with all weights equal it reproduces the unweighted cuts.
+fn build_feature_cuts_weighted(sorted: &[(f32, f32)], max_bin: usize, out: &mut Vec<f32>) {
+    if sorted.is_empty() {
+        // No non-missing values: a single degenerate bin so the layout stays
+        // well-formed. This feature can never produce a split.
+        out.push(0.0);
+        return;
+    }
+    let max_val = sorted.last().unwrap().0;
+
+    // Count distinct values (compared on value only).
+    let mut distinct = 1usize;
+    for w in sorted.windows(2) {
+        if w[0].0 != w[1].0 {
+            distinct += 1;
+        }
+    }
+
+    let start = out.len();
+    if distinct <= max_bin {
+        // Use each distinct value as a cut (weights irrelevant here).
+        out.push(sorted[0].0);
+        for w in sorted.windows(2) {
+            if w[0].0 != w[1].0 {
+                out.push(w[1].0);
+            }
+        }
+    } else {
+        let total: f64 = sorted.iter().map(|&(_, w)| w as f64).sum();
+        let mut last_pushed = f32::NEG_INFINITY;
+        if total > 0.0 {
+            // Weighted quantiles: place cut `b` at the value where the running
+            // weight first reaches `b/max_bin` of the total weight.
+            let step = total / max_bin as f64;
+            let mut cum = 0.0f64;
+            let mut b = 1usize;
+            for &(v, w) in sorted {
+                cum += w as f64;
+                while b <= max_bin && cum + 1e-12 >= b as f64 * step {
+                    if v > last_pushed {
+                        out.push(v);
+                        last_pushed = v;
+                    }
+                    b += 1;
+                }
+            }
+        } else {
+            // Degenerate all-zero weights: fall back to unweighted positions.
+            let n = sorted.len();
+            for b in 1..=max_bin {
+                let q = b as f64 / max_bin as f64;
+                let idx = (((q * n as f64).ceil() as usize).max(1) - 1).min(n - 1);
+                let v = sorted[idx].0;
+                if v > last_pushed {
+                    out.push(v);
+                    last_pushed = v;
+                }
+            }
+        }
+    }
+    push_max_sentinel(out, max_val);
+    debug_assert!(out.len() > start);
+}
+
+/// Append a sentinel cut just above `max_val` (so the maximum value lands in the
+/// final real bin rather than colliding under the clamp), unless the last cut is
+/// already past it.
+fn push_max_sentinel(out: &mut Vec<f32>, max_val: f32) {
     if *out.last().unwrap() <= max_val {
         out.push(max_val.next_up());
     }
-    debug_assert!(out.len() > start);
 }
 
 #[cfg(test)]
