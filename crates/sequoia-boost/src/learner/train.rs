@@ -21,6 +21,9 @@ use rand::{Rng, SeedableRng};
 enum Prepared {
     Exact(SortedColumns),
     Hist(GHistIndex),
+    /// `tree_method=approx`: no state is cached up front; each round recomputes
+    /// hessian-weighted cuts and bins from that round's gradients.
+    Approx,
 }
 
 impl Prepared {
@@ -40,6 +43,14 @@ impl Prepared {
             Prepared::Hist(ghist) => {
                 HistTreeBuilder::new(params).build(ghist, gpair, rows, sampler)
             }
+            Prepared::Approx => {
+                // Recompute hessian-weighted cuts from this round's gradients,
+                // rebin, then grow with the shared histogram builder.
+                let hessians: Vec<f32> = gpair.iter().map(|g| g.hess).collect();
+                let cuts = HistCuts::from_dmatrix_weighted(dtrain, params.max_bin, &hessians);
+                let ghist = GHistIndex::from_dmatrix(dtrain, cuts);
+                HistTreeBuilder::new(params).build(&ghist, gpair, rows, sampler)
+            }
         }
     }
 }
@@ -51,12 +62,7 @@ fn prepare_builder(params: &TrainingParams, dtrain: &DMatrix) -> Result<Prepared
         // Auto favors the histogram method, as modern XGBoost does.
         TreeMethod::Auto | TreeMethod::Hist => TreeMethod::Hist,
         TreeMethod::Exact => TreeMethod::Exact,
-        TreeMethod::Approx => {
-            return Err(SequoiaError::invalid_param(
-                "tree_method",
-                "`approx` is not yet available; use `hist` or `exact`",
-            ));
-        }
+        TreeMethod::Approx => TreeMethod::Approx,
     };
     if method == TreeMethod::Exact && params.grow_policy == GrowPolicy::LossGuide {
         return Err(SequoiaError::invalid_param(
@@ -80,6 +86,8 @@ fn prepare_builder(params: &TrainingParams, dtrain: &DMatrix) -> Result<Prepared
             let cuts = HistCuts::from_dmatrix(dtrain, params.max_bin);
             Prepared::Hist(GHistIndex::from_dmatrix(dtrain, cuts))
         }
+        // Approx caches nothing: cuts are rebuilt per round in `build_tree`.
+        TreeMethod::Approx => Prepared::Approx,
         _ => Prepared::Exact(SortedColumns::from_dmatrix(dtrain)),
     })
 }
@@ -576,6 +584,46 @@ mod tests {
         assert!(rmse_exact < 0.05, "exact rmse {rmse_exact}");
         // The two methods should land very close on this cleanly-binnable problem.
         assert!((rmse_hist - rmse_exact).abs() < 0.02);
+    }
+
+    #[test]
+    fn approx_reduces_training_error() {
+        let d = step_dataset(120);
+        let params = TrainingParams::builder()
+            .objective("reg:squarederror")
+            .tree_method(crate::config::TreeMethod::Approx)
+            .max_depth(3)
+            .eta(0.3)
+            .build()
+            .unwrap();
+        let model = train(&params, &d, 50).unwrap();
+        assert_eq!(model.num_trees(), 50);
+        let preds = model.predict(&d).unwrap();
+        let rmse = Rmse.eval(&preds, d.labels().unwrap(), None);
+        assert!(rmse < 0.05, "approx rmse too high: {rmse}");
+    }
+
+    #[test]
+    fn approx_and_hist_reach_similar_accuracy() {
+        let d = step_dataset(120);
+        let mk = |method: crate::config::TreeMethod| {
+            let params = TrainingParams::builder()
+                .objective("reg:squarederror")
+                .tree_method(method)
+                .max_depth(3)
+                .eta(0.3)
+                .build()
+                .unwrap();
+            let model = train(&params, &d, 60).unwrap();
+            let preds = model.predict(&d).unwrap();
+            Rmse.eval(&preds, d.labels().unwrap(), None)
+        };
+        let rmse_approx = mk(crate::config::TreeMethod::Approx);
+        let rmse_hist = mk(crate::config::TreeMethod::Hist);
+        assert!(rmse_approx < 0.05, "approx rmse {rmse_approx}");
+        assert!(rmse_hist < 0.05, "hist rmse {rmse_hist}");
+        // Both land close on this cleanly-binnable problem.
+        assert!((rmse_approx - rmse_hist).abs() < 0.02);
     }
 
     #[test]
