@@ -482,7 +482,16 @@ impl<'a> ExactTreeBuilder<'a> {
         let ra = total.sub(left_present);
         if la.hess >= mcw && ra.hess >= mcw {
             self.consider(
-                best, la, ra, parent_gain, bounds, dir, constrained, feature, threshold, false,
+                best,
+                la,
+                ra,
+                parent_gain,
+                bounds,
+                dir,
+                constrained,
+                feature,
+                threshold,
+                false,
             );
         }
 
@@ -492,7 +501,16 @@ impl<'a> ExactTreeBuilder<'a> {
         let rb = present.sub(left_present);
         if lb.hess >= mcw && rb.hess >= mcw {
             self.consider(
-                best, lb, rb, parent_gain, bounds, dir, constrained, feature, threshold, true,
+                best,
+                lb,
+                rb,
+                parent_gain,
+                bounds,
+                dir,
+                constrained,
+                feature,
+                threshold,
+                true,
             );
         }
     }

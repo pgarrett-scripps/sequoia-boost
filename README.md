@@ -45,20 +45,26 @@ fn main() -> Result<()> {
 
 **Implemented & tested**
 
-- **Boosters/trees:** `gbtree`; `tree_method = exact | hist`; `grow_policy =
-  depthwise | lossguide`; histogram binning with the parent−child subtraction
-  trick; sparsity-aware missing-value handling; row/column subsampling.
+- **Boosters:** `gbtree`, **`dart`** (tree dropout), and **`gblinear`** (linear
+  model via coordinate descent).
+- **Trees:** `tree_method = exact | hist | approx` (approx uses hessian-weighted
+  per-round binning); `grow_policy = depthwise | lossguide`; histogram binning
+  with the parent−child subtraction trick; sparsity-aware missing-value handling;
+  row/column subsampling (`bytree`/`bylevel`/`bynode`).
 - **Regularization:** `lambda`, `alpha`, `gamma`, `min_child_weight`,
   `max_delta_step`, `max_depth`, `max_leaves`, `max_bin`.
 - **Objectives:** `reg:squarederror`, `reg:pseudohubererror`, `binary:logistic`,
   `multi:softmax`, `multi:softprob`, `count:poisson`, `reg:gamma`, `reg:tweedie`,
   learning-to-rank (`rank:pairwise`, `rank:ndcg`, `rank:map`, LambdaMART), and a
   user **custom-objective hook**.
-- **Metrics:** `rmse`, `mae`, `logloss`, `error`, `auc`, `mlogloss`, `merror`,
-  `poisson/gamma/tweedie-nloglik`, `ndcg`, `map` (with `@k`).
-- **Boosters:** `gbtree` and **`dart`** (tree dropout).
-- **Modeling:** monotone constraints, **native categorical splits** (hist),
-  **TreeSHAP** exact contributions (`predict_contribs`), early stopping, feature
+- **Metrics:** `rmse`, `mae`, `logloss`, `error`, `auc`, `aucpr`, `mlogloss`,
+  `merror`, `poisson/gamma/tweedie-nloglik`, `ndcg`, `map` (with `@k`), and a
+  **custom-metric hook**.
+- **Constraints:** monotone constraints and **interaction constraints** —
+  supported in **both** the `hist` and `exact` builders.
+- **Modeling:** **native categorical splits** (hist and exact), per-instance
+  `base_margin` (warm-start), **TreeSHAP** contributions (`predict_contribs`) and
+  **interaction values** (`predict_interactions`), early stopping, feature
   importance (weight / gain / cover / totals), leaf-index and margin prediction.
 - **Ecosystem:** libsvm & CSV loaders, native binary + JSON model I/O,
   **XGBoost-format JSON model import/export**, k-fold cross-validation,
@@ -66,9 +72,9 @@ fn main() -> Result<()> {
 
 **In progress / planned**
 
-- `tree_method = approx`; interaction constraints; `gblinear` booster.
-- UBJSON (binary) XGBoost model format; categorical splits in the exact builder.
+- UBJSON (binary) XGBoost model format.
 - GPU histogram backend (the `HistogramBackend` trait is the seam for it).
+- Distributed / external-memory training.
 - Python (PyO3), CLI, and C-ABI wrappers.
 
 ## Performance

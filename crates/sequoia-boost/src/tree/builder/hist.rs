@@ -737,9 +737,12 @@ fn intersect_allowed(parent: Option<&[u32]>, feat: Option<&[u32]>) -> Option<Vec
     match (parent, feat) {
         (None, None) => None,
         (None, Some(v)) | (Some(v), None) => Some(v.to_vec()),
-        (Some(p), Some(v)) => {
-            Some(p.iter().copied().filter(|f| v.binary_search(f).is_ok()).collect())
-        }
+        (Some(p), Some(v)) => Some(
+            p.iter()
+                .copied()
+                .filter(|f| v.binary_search(f).is_ok())
+                .collect(),
+        ),
     }
 }
 

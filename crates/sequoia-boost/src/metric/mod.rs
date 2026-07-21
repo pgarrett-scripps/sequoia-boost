@@ -837,7 +837,10 @@ mod tests {
         let good = m.eval(&[0.9, 0.8, 0.7, 0.3, 0.2, 0.1], &labels, None);
         let poor = m.eval(&[0.9, 0.2, 0.7, 0.8, 0.1, 0.3], &labels, None);
         assert_relative_eq!(good, 1.0, epsilon = 1e-9);
-        assert!(good > poor, "better ranking should score higher: {good} vs {poor}");
+        assert!(
+            good > poor,
+            "better ranking should score higher: {good} vs {poor}"
+        );
         // The prevalence baseline (3/6) is the expected value of a random ranker;
         // a good ranking clears it comfortably.
         assert!(poor > 0.5, "poor ranking still beats nothing: {poor}");

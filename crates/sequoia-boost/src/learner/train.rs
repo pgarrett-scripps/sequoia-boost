@@ -1040,7 +1040,10 @@ mod tests {
         };
         let rmse_num = mk(&numeric);
         let rmse_cat = mk(&categorical);
-        assert!(rmse_cat < 0.02, "exact categorical rmse too high: {rmse_cat}");
+        assert!(
+            rmse_cat < 0.02,
+            "exact categorical rmse too high: {rmse_cat}"
+        );
         assert!(rmse_num > 0.05, "numeric unexpectedly fit it: {rmse_num}");
         assert!(
             rmse_cat < rmse_num,
@@ -1078,7 +1081,10 @@ mod tests {
         let preds = model.predict(&d).unwrap();
         let mut prev = f32::NEG_INFINITY;
         for (i, p) in preds.iter().enumerate() {
-            assert!(*p >= prev - 1e-4, "monotonicity violated at row {i}: {p} < {prev}");
+            assert!(
+                *p >= prev - 1e-4,
+                "monotonicity violated at row {i}: {p} < {prev}"
+            );
             prev = *p;
         }
     }
