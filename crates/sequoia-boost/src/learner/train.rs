@@ -70,17 +70,6 @@ fn prepare_builder(params: &TrainingParams, dtrain: &DMatrix) -> Result<Prepared
             "`lossguide` growth requires `tree_method=hist`",
         ));
     }
-    if method == TreeMethod::Exact
-        && params
-            .monotone_constraints
-            .iter()
-            .any(|m| *m != crate::config::Monotone::None)
-    {
-        return Err(SequoiaError::invalid_param(
-            "monotone_constraints",
-            "monotone constraints currently require `tree_method=hist`",
-        ));
-    }
     Ok(match method {
         TreeMethod::Hist => {
             let cuts = HistCuts::from_dmatrix(dtrain, params.max_bin);
@@ -1013,6 +1002,85 @@ mod tests {
             rmse_cat < rmse_num,
             "categorical ({rmse_cat}) should beat numeric ({rmse_num})"
         );
+    }
+
+    #[test]
+    fn exact_categorical_beats_numeric_on_non_ordinal_pattern() {
+        use crate::data::FeatureType;
+        // Same non-ordinal pattern as the hist test, but forcing tree_method=exact.
+        let cats = [0.0f32, 1.0, 2.0, 3.0];
+        let mut x = Vec::new();
+        let mut y = Vec::new();
+        for _ in 0..40 {
+            for &c in &cats {
+                x.push(c);
+                y.push(if (c as u32) % 2 == 1 { 1.0 } else { 0.0 });
+            }
+        }
+        let n = x.len();
+        let numeric = DMatrix::from_dense(&x, n, 1)
+            .unwrap()
+            .with_labels(&y)
+            .unwrap();
+        let categorical = numeric
+            .clone()
+            .with_feature_types(&[FeatureType::Categorical])
+            .unwrap();
+
+        let mk = |d: &DMatrix| {
+            let p = TrainingParams::builder()
+                .objective("reg:squarederror")
+                .tree_method(crate::config::TreeMethod::Exact)
+                .max_depth(1)
+                .eta(0.3)
+                .build()
+                .unwrap();
+            let m = train(&p, d, 40).unwrap();
+            Rmse.eval(&m.predict(d).unwrap(), d.labels().unwrap(), None)
+        };
+        let rmse_num = mk(&numeric);
+        let rmse_cat = mk(&categorical);
+        assert!(rmse_cat < 0.02, "exact categorical rmse too high: {rmse_cat}");
+        assert!(rmse_num > 0.05, "numeric unexpectedly fit it: {rmse_num}");
+        assert!(
+            rmse_cat < rmse_num,
+            "exact categorical ({rmse_cat}) should beat numeric ({rmse_num})"
+        );
+    }
+
+    #[test]
+    fn exact_monotone_increasing_predictions_nondecreasing() {
+        use crate::config::Monotone;
+        // A V-shaped target: the unconstrained fit dips then rises. Under an
+        // increasing constraint with tree_method=exact, predictions must be
+        // non-decreasing in the feature.
+        let n = 80;
+        let mut x = Vec::new();
+        let mut y = Vec::new();
+        for i in 0..n {
+            let xi = i as f32 / n as f32;
+            x.push(xi);
+            y.push((xi - 0.5).abs());
+        }
+        let d = DMatrix::from_dense(&x, n, 1)
+            .unwrap()
+            .with_labels(&y)
+            .unwrap();
+        let params = TrainingParams::builder()
+            .objective("reg:squarederror")
+            .tree_method(crate::config::TreeMethod::Exact)
+            .max_depth(4)
+            .eta(0.3)
+            .monotone_constraints(vec![Monotone::Increasing])
+            .build()
+            .unwrap();
+        let model = train(&params, &d, 50).unwrap();
+        let preds = model.predict(&d).unwrap();
+        let mut prev = f32::NEG_INFINITY;
+        for (i, p) in preds.iter().enumerate() {
+            assert!(*p >= prev - 1e-4, "monotonicity violated at row {i}: {p} < {prev}");
+            prev = *p;
+        }
     }
 
     #[test]
