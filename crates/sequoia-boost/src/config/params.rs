@@ -134,6 +134,10 @@ pub struct TrainingParams {
     pub max_bin: usize,
     /// Per-feature monotone constraints (empty = none). XGBoost `monotone_constraints`.
     pub monotone_constraints: Vec<Monotone>,
+    /// Allowed feature-interaction groups (empty = none). Each inner vector lists
+    /// feature indices permitted to appear together on a single root-to-leaf path.
+    /// XGBoost `interaction_constraints`.
+    pub interaction_constraints: Vec<Vec<u32>>,
 
     // ---- DART-specific ----
     /// Fraction of trees to drop each round (DART). XGBoost `rate_drop`.
@@ -173,6 +177,7 @@ impl Default for TrainingParams {
             grow_policy: GrowPolicy::DepthWise,
             max_bin: 256,
             monotone_constraints: Vec::new(),
+            interaction_constraints: Vec::new(),
             rate_drop: 0.0,
             skip_drop: 0.0,
             missing: f64::NAN,
@@ -342,6 +347,16 @@ impl TrainingParamsBuilder {
     /// Set the per-feature monotone constraints.
     pub fn monotone_constraints(mut self, c: Vec<Monotone>) -> Self {
         self.params.monotone_constraints = c;
+        self
+    }
+
+    /// Set the allowed feature-interaction groups.
+    ///
+    /// Each inner vector lists feature indices that are permitted to appear
+    /// together on a single root-to-leaf path. An empty list disables the
+    /// constraint. Mirrors XGBoost `interaction_constraints`.
+    pub fn interaction_constraints(mut self, c: Vec<Vec<u32>>) -> Self {
+        self.params.interaction_constraints = c;
         self
     }
 

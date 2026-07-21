@@ -17,7 +17,7 @@ use crate::tree::hist::{subtracted, zeroed, CpuBackend, Histogram, HistogramBack
 use crate::tree::regtree::RegTree;
 use crate::tree::sampler::ColumnSampler;
 use std::cmp::Ordering;
-use std::collections::BinaryHeap;
+use std::collections::{BTreeSet, BinaryHeap, HashMap};
 
 const K_RT_EPS: f64 = 1e-6;
 
@@ -70,6 +70,10 @@ struct NodeEntry {
     hist: Histogram,
     best: BestSplit,
     bounds: Bounds,
+    /// Features permitted for splits under this node given the interaction
+    /// constraints and the split features on the path from the root. `None`
+    /// means "all features allowed" (the root, and the inactive case).
+    allowed: Option<Vec<u32>>,
 }
 
 // Ordering for the loss-guided priority queue (max-heap on loss change).
@@ -95,6 +99,11 @@ pub struct HistTreeBuilder<'a> {
     params: &'a TrainingParams,
     reg: RegParams,
     cons: MonotoneConstraints,
+    /// Per-feature interaction sets: feature -> sorted set of features it may be
+    /// combined with on a path (its interaction set). `None` means interaction
+    /// constraints are inactive (no filtering). A feature absent from the map
+    /// appears in no constraint group, so its interaction set is "all features".
+    interaction_sets: Option<HashMap<u32, Vec<u32>>>,
     backend: CpuBackend,
 }
 
@@ -105,8 +114,20 @@ impl<'a> HistTreeBuilder<'a> {
             params,
             reg: RegParams::from_params(params),
             cons: MonotoneConstraints::from_params(&params.monotone_constraints),
+            interaction_sets: build_interaction_sets(&params.interaction_constraints),
             backend: CpuBackend,
         }
+    }
+
+    /// Interaction set for a feature: the features it may be combined with on a
+    /// path. `None` means "all features" (constraints inactive, or the feature
+    /// appears in no group).
+    #[inline]
+    fn interaction_set(&self, feature: u32) -> Option<&[u32]> {
+        self.interaction_sets
+            .as_ref()
+            .and_then(|m| m.get(&feature))
+            .map(|v| v.as_slice())
     }
 
     /// Grow one tree from the binned dataset.
@@ -141,12 +162,14 @@ impl<'a> HistTreeBuilder<'a> {
 
         // Per-node column sampling (bylevel ∘ bynode) draws a fresh subset here.
         let root_feats = sampler.sample();
+        // At the root every feature is allowed (`None`).
         let best = self.evaluate(
             ghist.cuts(),
             &root_hist,
             root_stats,
             &root_feats,
             Bounds::default(),
+            None,
         );
         let root = NodeEntry {
             nid: 0,
@@ -155,6 +178,7 @@ impl<'a> HistTreeBuilder<'a> {
             hist: root_hist,
             best,
             bounds: Bounds::default(),
+            allowed: None,
         };
 
         match self.params.grow_policy {
@@ -337,11 +361,33 @@ impl<'a> HistTreeBuilder<'a> {
             (lh, rh)
         };
 
+        // Both children share the same allowed feature set: the parent's set
+        // intersected with the split feature's interaction set. Inactive ⇒ `None`.
+        let child_allowed = if self.interaction_sets.is_none() {
+            None
+        } else {
+            intersect_allowed(entry.allowed.as_deref(), self.interaction_set(b.feature))
+        };
+
         // Each child draws its own column subset (per-node sampling).
         let lf = sampler.sample();
-        let left_best = self.evaluate(cuts, &left_hist, b.left, &lf, lb_bounds);
+        let left_best = self.evaluate(
+            cuts,
+            &left_hist,
+            b.left,
+            &lf,
+            lb_bounds,
+            child_allowed.as_deref(),
+        );
         let rf = sampler.sample();
-        let right_best = self.evaluate(cuts, &right_hist, b.right, &rf, rb_bounds);
+        let right_best = self.evaluate(
+            cuts,
+            &right_hist,
+            b.right,
+            &rf,
+            rb_bounds,
+            child_allowed.as_deref(),
+        );
 
         let left = NodeEntry {
             nid: left_id,
@@ -350,6 +396,7 @@ impl<'a> HistTreeBuilder<'a> {
             hist: left_hist,
             best: left_best,
             bounds: lb_bounds,
+            allowed: child_allowed.clone(),
         };
         let right = NodeEntry {
             nid: right_id,
@@ -358,6 +405,7 @@ impl<'a> HistTreeBuilder<'a> {
             hist: right_hist,
             best: right_best,
             bounds: rb_bounds,
+            allowed: child_allowed,
         };
         (left, right)
     }
@@ -374,9 +422,26 @@ impl<'a> HistTreeBuilder<'a> {
         total: GradStats,
         feature_subset: &[u32],
         bounds: Bounds,
+        allowed: Option<&[u32]>,
     ) -> BestSplit {
         let mut best = BestSplit::none();
         let mcw = self.reg.min_child_weight;
+
+        // Restrict the sampled features to those permitted by the interaction
+        // constraints for this node. `allowed` is a sorted set; `None` means all
+        // features are allowed (constraints inactive or unconstrained path).
+        let filtered: Vec<u32>;
+        let feature_subset: &[u32] = match allowed {
+            Some(allow) => {
+                filtered = feature_subset
+                    .iter()
+                    .copied()
+                    .filter(|f| allow.binary_search(f).is_ok())
+                    .collect();
+                &filtered
+            }
+            None => feature_subset,
+        };
         // When no monotone constraints are configured, the bounds are always
         // infinite, so the cheap closed-form gain `Tα(G)²/(H+λ)` is exact and
         // avoids the per-candidate weight/clamp arithmetic.
@@ -641,6 +706,43 @@ impl<'a> HistTreeBuilder<'a> {
     }
 }
 
+/// Precompute per-feature interaction sets from the constraint groups.
+///
+/// The interaction set of a feature is the union of every group that contains
+/// it (which includes the feature itself). A feature that appears in no group is
+/// simply absent from the map: its interaction set is "all features". Returns
+/// `None` when no constraints are configured (the inactive, no-filtering case).
+fn build_interaction_sets(groups: &[Vec<u32>]) -> Option<HashMap<u32, Vec<u32>>> {
+    if groups.is_empty() {
+        return None;
+    }
+    let mut sets: HashMap<u32, BTreeSet<u32>> = HashMap::new();
+    for group in groups {
+        for &f in group {
+            let entry = sets.entry(f).or_default();
+            entry.extend(group.iter().copied());
+        }
+    }
+    Some(
+        sets.into_iter()
+            .map(|(f, s)| (f, s.into_iter().collect()))
+            .collect(),
+    )
+}
+
+/// Intersect a node's allowed set with a feature's interaction set. Both operands
+/// are sorted; `None` denotes "all features". The result is sorted, and `None`
+/// only when both operands are `None`.
+fn intersect_allowed(parent: Option<&[u32]>, feat: Option<&[u32]>) -> Option<Vec<u32>> {
+    match (parent, feat) {
+        (None, None) => None,
+        (None, Some(v)) | (Some(v), None) => Some(v.to_vec()),
+        (Some(p), Some(v)) => {
+            Some(p.iter().copied().filter(|f| v.binary_search(f).is_ok()).collect())
+        }
+    }
+}
+
 /// Per-node statistics and monotone bounds, indexed by node id.
 struct NodeStore {
     stats: Vec<GradStats>,
@@ -785,6 +887,112 @@ mod tests {
                 "monotonicity violated at x={xi}: {p} < {prev}"
             );
             prev = p;
+        }
+    }
+
+    // Collect the split features along every root-to-leaf path.
+    fn root_to_leaf_feature_sets(tree: &RegTree) -> Vec<Vec<u32>> {
+        fn walk(tree: &RegTree, id: usize, path: &mut Vec<u32>, out: &mut Vec<Vec<u32>>) {
+            let node = tree.node(id);
+            if node.is_leaf() {
+                out.push(path.clone());
+                return;
+            }
+            path.push(node.split_feature);
+            walk(tree, node.left as usize, path, out);
+            walk(tree, node.right as usize, path, out);
+            path.pop();
+        }
+        let mut out = Vec::new();
+        walk(tree, 0, &mut Vec::new(), &mut out);
+        out
+    }
+
+    // A 4-feature dataset where every feature carries signal, so an
+    // unconstrained tree would happily mix features across groups.
+    fn four_feature_data() -> (DMatrix, Vec<GradPair>) {
+        let n = 32;
+        let mut x = vec![0.0f32; n * 4];
+        let mut gpair = Vec::with_capacity(n);
+        for i in 0..n {
+            // Distinct-ish per-feature patterns so each is individually useful.
+            x[i * 4] = (i % 2) as f32;
+            x[i * 4 + 1] = (i % 4) as f32;
+            x[i * 4 + 2] = (i % 8) as f32;
+            x[i * 4 + 3] = (i % 16) as f32;
+            let g = if i % 2 == 0 { 1.0 } else { -1.0 };
+            gpair.push(gp(g, 1.0));
+        }
+        (DMatrix::from_dense(&x, n, 4).unwrap(), gpair)
+    }
+
+    #[test]
+    fn interaction_constraints_confine_paths_to_one_group() {
+        let (data, gpair) = four_feature_data();
+        let ghist = binned(&data, 256);
+        let params = TrainingParams::builder()
+            .max_depth(4)
+            .min_child_weight(0.0)
+            .gamma(0.0)
+            .lambda(0.0)
+            .interaction_constraints(vec![vec![0, 1], vec![2, 3]])
+            .build()
+            .unwrap();
+        let tree = HistTreeBuilder::new(&params).build(
+            &ghist,
+            &gpair,
+            &all_rows(data.n_rows()),
+            &mut crate::tree::sampler::ColumnSampler::all(4),
+        );
+
+        // Every path's split features must fit inside a single allowed group:
+        // never both a {0,1} feature and a {2,3} feature on the same path.
+        for path in root_to_leaf_feature_sets(&tree) {
+            let has_ab = path.iter().any(|&f| f == 0 || f == 1);
+            let has_cd = path.iter().any(|&f| f == 2 || f == 3);
+            assert!(
+                !(has_ab && has_cd),
+                "path mixes interaction groups: {path:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_interaction_constraints_leave_behavior_unchanged() {
+        let (data, gpair) = four_feature_data();
+        let ghist = binned(&data, 256);
+        let base = TrainingParams::builder()
+            .max_depth(4)
+            .min_child_weight(0.0)
+            .gamma(0.0)
+            .lambda(0.0)
+            .build()
+            .unwrap();
+        let with_empty = TrainingParams::builder()
+            .max_depth(4)
+            .min_child_weight(0.0)
+            .gamma(0.0)
+            .lambda(0.0)
+            .interaction_constraints(Vec::new())
+            .build()
+            .unwrap();
+
+        let t1 = HistTreeBuilder::new(&base).build(
+            &ghist,
+            &gpair,
+            &all_rows(data.n_rows()),
+            &mut crate::tree::sampler::ColumnSampler::all(4),
+        );
+        let t2 = HistTreeBuilder::new(&with_empty).build(
+            &ghist,
+            &gpair,
+            &all_rows(data.n_rows()),
+            &mut crate::tree::sampler::ColumnSampler::all(4),
+        );
+
+        assert_eq!(t1.num_nodes(), t2.num_nodes());
+        for r in 0..data.n_rows() {
+            assert!((t1.predict_row(&data, r) - t2.predict_row(&data, r)).abs() < 1e-9);
         }
     }
 

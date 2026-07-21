@@ -5,6 +5,10 @@
 //! This is the reference builder: not the fastest (the histogram builder in a
 //! later phase is), but the easiest to verify against XGBoost. Growth is
 //! level-wise (depth-wise): a whole level is scanned per feature pass.
+//!
+//! Monotone and interaction constraints are honored only by the histogram
+//! builder; this exact builder ignores `monotone_constraints` and
+//! `interaction_constraints`.
 
 use crate::config::TrainingParams;
 use crate::data::DMatrix;
