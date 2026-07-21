@@ -8,4 +8,5 @@ mod train;
 
 pub use cv::{cv, CvResult};
 pub use model::{BoostedModel, ImportanceType};
+pub(crate) use model::LinearModel;
 pub use train::{train, train_with_eval, train_with_objective, EvalSet, RoundEval, TrainResult};
