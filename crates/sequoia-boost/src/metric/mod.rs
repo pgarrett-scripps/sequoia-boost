@@ -524,6 +524,129 @@ impl Metric for MeanAveragePrecision {
     }
 }
 
+/// Area under the precision-recall curve for binary classification (`aucpr`).
+///
+/// Labels are `{0, 1}` and predictions are probabilities. The curve is traced by
+/// sorting instances by descending prediction and sweeping the decision
+/// threshold; the area is integrated over recall with the trapezoidal rule
+/// (tied scores form a single operating point). Higher is better. A degenerate
+/// problem (no positives or no negatives) yields `0`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AucPr;
+
+impl Metric for AucPr {
+    fn name(&self) -> &str {
+        "aucpr"
+    }
+
+    fn maximize(&self) -> bool {
+        true
+    }
+
+    fn eval(&self, preds: &[f32], labels: &[f32], weights: Option<&[f32]>) -> f64 {
+        let n = preds.len();
+        let w_of = |i: usize| weights.map_or(1.0, |ws| ws[i] as f64);
+
+        // Sort instance indices by descending predicted score.
+        let mut order: Vec<usize> = (0..n).collect();
+        order.sort_by(|&a, &b| preds[b].partial_cmp(&preds[a]).unwrap());
+
+        let mut total_pos = 0.0f64;
+        let mut total_neg = 0.0f64;
+        for (i, &label) in labels.iter().enumerate() {
+            if label > 0.5 {
+                total_pos += w_of(i);
+            } else {
+                total_neg += w_of(i);
+            }
+        }
+        if total_pos <= 0.0 || total_neg <= 0.0 {
+            return 0.0;
+        }
+
+        // Sweep thresholds, accumulating (weighted) true/false positives and
+        // integrating precision over recall with the trapezoidal rule. Runs of
+        // tied scores collapse into a single operating point.
+        let mut area = 0.0f64;
+        let (mut tp, mut fp) = (0.0f64, 0.0f64);
+        let (mut tp_prev, mut fp_prev) = (0.0f64, 0.0f64);
+        let mut i = 0;
+        while i < n {
+            let mut j = i;
+            while j < n && preds[order[j]] == preds[order[i]] {
+                let idx = order[j];
+                if labels[idx] > 0.5 {
+                    tp += w_of(idx);
+                } else {
+                    fp += w_of(idx);
+                }
+                j += 1;
+            }
+            if tp + fp > 0.0 {
+                let recall = tp / total_pos;
+                let recall_prev = tp_prev / total_pos;
+                let prec = tp / (tp + fp);
+                // At the first operating point precision is undefined; reuse the
+                // current precision so the leading segment integrates cleanly.
+                let prec_prev = if tp_prev + fp_prev > 0.0 {
+                    tp_prev / (tp_prev + fp_prev)
+                } else {
+                    prec
+                };
+                area += (recall - recall_prev) * (prec + prec_prev) / 2.0;
+            }
+            tp_prev = tp;
+            fp_prev = fp;
+            i = j;
+        }
+        area
+    }
+}
+
+/// Closure type backing a [`CustomMetric`].
+type MetricFn = dyn Fn(&[f32], &[f32], Option<&[f32]>) -> f64 + Send + Sync;
+
+/// A [`Metric`] backed by a user-supplied closure (the custom-metric hook).
+///
+/// The closure receives post-transform predictions, labels, and optional
+/// weights, and returns the scalar metric value. `maximize` declares the
+/// optimization direction used for early stopping.
+pub struct CustomMetric {
+    name: String,
+    maximize: bool,
+    f: Box<MetricFn>,
+}
+
+impl CustomMetric {
+    /// Build a custom metric from `name`, its `maximize` direction, and a
+    /// `(preds, labels, weights) -> value` closure.
+    pub fn new(
+        name: impl Into<String>,
+        maximize: bool,
+        f: impl Fn(&[f32], &[f32], Option<&[f32]>) -> f64 + Send + Sync + 'static,
+    ) -> Self {
+        CustomMetric {
+            name: name.into(),
+            maximize,
+            f: Box::new(f),
+        }
+    }
+}
+
+impl Metric for CustomMetric {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn maximize(&self) -> bool {
+        self.maximize
+    }
+
+    fn eval(&self, preds: &[f32], labels: &[f32], weights: Option<&[f32]>) -> f64 {
+        (self.f)(preds, labels, weights)
+    }
+}
+
 /// Resolve a metric by name. `num_class` is used by multiclass metrics.
 pub fn create_metric(name: &str, num_class: usize) -> Result<Box<dyn Metric>> {
     // Accept the XGBoost `tweedie-nloglik@1.5` suffix form.
@@ -537,6 +660,7 @@ pub fn create_metric(name: &str, num_class: usize) -> Result<Box<dyn Metric>> {
         "logloss" => Ok(Box::new(LogLoss)),
         "error" => Ok(Box::new(ErrorRate)),
         "auc" => Ok(Box::new(Auc)),
+        "aucpr" => Ok(Box::new(AucPr)),
         "mlogloss" => Ok(Box::new(MLogLoss {
             num_class: num_class.max(2),
         })),
@@ -696,6 +820,35 @@ mod tests {
         // `@k` suffix parses without error.
         assert_eq!(create_metric("ndcg@5", 0).unwrap().name(), "ndcg");
         assert_eq!(create_metric("map@10", 0).unwrap().name(), "map");
+    }
+
+    #[test]
+    fn aucpr_perfect_and_ranks_better_than_random() {
+        let m = AucPr;
+        assert!(m.maximize());
+        assert_eq!(create_metric("aucpr", 0).unwrap().name(), "aucpr");
+
+        // Perfectly separable: all positives scored above all negatives -> ~1.
+        let perfect = m.eval(&[0.1, 0.2, 0.8, 0.9], &[0.0, 0.0, 1.0, 1.0], None);
+        assert_relative_eq!(perfect, 1.0, epsilon = 1e-9);
+
+        // A ranking that puts positives up front beats one that scatters them.
+        let labels = [1.0f32, 1.0, 1.0, 0.0, 0.0, 0.0];
+        let good = m.eval(&[0.9, 0.8, 0.7, 0.3, 0.2, 0.1], &labels, None);
+        let poor = m.eval(&[0.9, 0.2, 0.7, 0.8, 0.1, 0.3], &labels, None);
+        assert_relative_eq!(good, 1.0, epsilon = 1e-9);
+        assert!(good > poor, "better ranking should score higher: {good} vs {poor}");
+        // The prevalence baseline (3/6) is the expected value of a random ranker;
+        // a good ranking clears it comfortably.
+        assert!(poor > 0.5, "poor ranking still beats nothing: {poor}");
+    }
+
+    #[test]
+    fn aucpr_degenerate_returns_zero() {
+        let m = AucPr;
+        // No negatives (or no positives) -> undefined PR curve, reported as 0.
+        assert_eq!(m.eval(&[0.3, 0.6, 0.9], &[1.0, 1.0, 1.0], None), 0.0);
+        assert_eq!(m.eval(&[0.3, 0.6, 0.9], &[0.0, 0.0, 0.0], None), 0.0);
     }
 
     #[test]
