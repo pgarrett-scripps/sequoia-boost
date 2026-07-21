@@ -227,6 +227,25 @@ fn train_impl(
         n_features,
     );
 
+    // The linear (`gblinear`) booster fits a coordinate-descent linear model
+    // instead of growing trees; it skips the tree/dart path entirely. Eval sets
+    // and early stopping are not applied to it (the history stays empty).
+    if params.booster == BoosterKind::GbLinear {
+        let linear = crate::booster::gblinear::train_gblinear(
+            params,
+            dtrain,
+            num_boost_round,
+            base_margin,
+            n_out,
+            objective.as_ref(),
+        )?;
+        model.set_linear(linear);
+        return Ok(TrainResult {
+            model,
+            history: Vec::new(),
+        });
+    }
+
     let prepared = prepare_builder(params, dtrain)?;
 
     // Incremental margin caches (length rows × n_out). A dataset's per-instance
@@ -1077,6 +1096,93 @@ mod tests {
         // With per-node sampling active, the fitted model must differ.
         let differs = full.iter().zip(&sampled).any(|(a, b)| (a - b).abs() > 1e-6);
         assert!(differs, "colsample_bynode had no effect on the model");
+    }
+
+    /// Build a 3-feature dataset for the linear target y = 2*x0 - 3*x1 + 0.5*x2
+    /// with a little deterministic noise.
+    fn linear_dataset(n: usize) -> DMatrix {
+        let f = 3usize;
+        let mut x = vec![0f32; n * f];
+        let mut y = vec![0f32; n];
+        let mut s: u64 = 11;
+        let mut rng = || {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+            ((s >> 33) as f32) / (1u32 << 31) as f32
+        };
+        for i in 0..n {
+            let x0 = rng();
+            let x1 = rng();
+            let x2 = rng();
+            x[i * f] = x0;
+            x[i * f + 1] = x1;
+            x[i * f + 2] = x2;
+            let noise = (rng() - 0.5) * 0.02;
+            y[i] = 2.0 * x0 - 3.0 * x1 + 0.5 * x2 + noise;
+        }
+        DMatrix::from_dense(&x, n, f)
+            .unwrap()
+            .with_labels(&y)
+            .unwrap()
+    }
+
+    #[test]
+    fn gblinear_fits_linear_target() {
+        use crate::config::BoosterKind;
+        let d = linear_dataset(400);
+        let params = TrainingParams::builder()
+            .objective("reg:squarederror")
+            .booster(BoosterKind::GbLinear)
+            .eta(0.5)
+            .base_score(0.0)
+            .build()
+            .unwrap();
+        let model = train(&params, &d, 200).unwrap();
+        assert_eq!(model.num_trees(), 0);
+
+        let preds = model.predict(&d).unwrap();
+        let y = d.labels().unwrap();
+        let rmse = Rmse.eval(&preds, y, None);
+
+        // Baseline: predicting the label mean.
+        let mean = y.iter().sum::<f32>() / y.len() as f32;
+        let mean_preds = vec![mean; y.len()];
+        let rmse_mean = Rmse.eval(&mean_preds, y, None);
+
+        assert!(rmse < 0.1, "gblinear rmse too high: {rmse}");
+        assert!(
+            rmse < rmse_mean * 0.25,
+            "gblinear ({rmse}) should be far below the mean predictor ({rmse_mean})"
+        );
+    }
+
+    #[test]
+    fn gblinear_roundtrips() {
+        use crate::config::BoosterKind;
+        let d = linear_dataset(200);
+        let params = TrainingParams::builder()
+            .objective("reg:squarederror")
+            .booster(BoosterKind::GbLinear)
+            .eta(0.5)
+            .build()
+            .unwrap();
+        let model = train(&params, &d, 100).unwrap();
+        let before = model.predict(&d).unwrap();
+
+        // Binary serde round-trip.
+        let bytes = model.to_bytes().unwrap();
+        let restored = BoostedModel::from_bytes(&bytes).unwrap();
+        let after = restored.predict(&d).unwrap();
+        for (a, b) in before.iter().zip(&after) {
+            assert!((a - b).abs() < 1e-6, "binary roundtrip mismatch {a} vs {b}");
+        }
+
+        // JSON round-trip.
+        let json = model.to_json().unwrap();
+        let rj = BoostedModel::from_json(&json).unwrap();
+        let aj = rj.predict(&d).unwrap();
+        for (a, b) in before.iter().zip(&aj) {
+            assert!((a - b).abs() < 1e-6, "json roundtrip mismatch {a} vs {b}");
+        }
     }
 
     #[test]

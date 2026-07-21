@@ -32,6 +32,7 @@
 #![warn(missing_docs)]
 #![warn(clippy::all)]
 
+pub mod booster;
 pub mod config;
 pub mod data;
 pub mod error;

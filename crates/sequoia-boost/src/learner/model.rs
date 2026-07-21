@@ -45,6 +45,32 @@ pub struct BoostedModel {
     /// field existed, in which case every tree is treated as weight `1.0`.
     #[serde(default)]
     tree_weights: Vec<f32>,
+    /// Linear (coordinate-descent) booster parameters. `Some` only for
+    /// `gblinear` models, in which case predictions come from the linear model
+    /// and the `trees` vector is empty. Defaults to `None` for tree ensembles
+    /// and for models serialized before this field existed.
+    #[serde(default)]
+    linear: Option<LinearModel>,
+}
+
+/// The parameters of a linear (`gblinear`) booster: a per-output weight vector
+/// plus a per-output bias, fit by coordinate descent.
+///
+/// `weights` has length `n_features * n_outputs` laid out `[feature][output]`
+/// (the weight for feature `f`, output `k` is `weights[f * n_outputs + k]`);
+/// `bias` has length `n_outputs`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LinearModel {
+    weights: Vec<f32>,
+    bias: Vec<f32>,
+}
+
+impl LinearModel {
+    /// Assemble a linear model from its fitted `weights` (`[feature][output]`)
+    /// and per-output `bias`.
+    pub(crate) fn new(weights: Vec<f32>, bias: Vec<f32>) -> Self {
+        LinearModel { weights, bias }
+    }
 }
 
 impl BoostedModel {
@@ -62,7 +88,14 @@ impl BoostedModel {
             n_features,
             best_iteration: None,
             tree_weights: Vec::new(),
+            linear: None,
         }
+    }
+
+    /// Attach a fitted linear (`gblinear`) booster. Predictions then come from
+    /// the linear model instead of the (empty) tree ensemble.
+    pub(crate) fn set_linear(&mut self, linear: LinearModel) {
+        self.linear = Some(linear);
     }
 
     pub(crate) fn push_tree(&mut self, tree: RegTree) {
@@ -133,6 +166,7 @@ impl BoostedModel {
             n_features,
             best_iteration: None,
             tree_weights,
+            linear: None,
         }
     }
 
@@ -197,6 +231,29 @@ impl BoostedModel {
     pub fn predict_margin_limited(&self, data: &DMatrix, ntree_limit: usize) -> Vec<f32> {
         let n = data.n_rows();
         let k = self.n_outputs();
+        // A gblinear model predicts from its linear parameters and ignores the
+        // (empty) tree ensemble: margin(row, k) = base_score + bias[k] +
+        // Σ_f weights[f][k] * x[row, f], with missing features contributing 0.
+        if let Some(lm) = &self.linear {
+            let mut out = vec![self.base_score; n * k];
+            for row in 0..n {
+                for c in 0..k {
+                    out[row * k + c] += lm.bias[c];
+                }
+            }
+            for f in 0..self.n_features {
+                for row in 0..n {
+                    if let Some(x) = data.get(row, f) {
+                        if x != 0.0 {
+                            for c in 0..k {
+                                out[row * k + c] += lm.weights[f * k + c] * x;
+                            }
+                        }
+                    }
+                }
+            }
+            return out;
+        }
         let limit = if ntree_limit == 0 {
             self.trees.len()
         } else {
