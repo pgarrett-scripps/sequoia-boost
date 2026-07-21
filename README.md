@@ -137,6 +137,17 @@ Numerical parity against upstream XGBoost is checked by a fixture harness:
 predictions to `fixtures/`; the ignored integration test `tests/parity.rs`
 asserts `sequoia-boost` matches within tolerance. See `scripts/README.md`.
 
+## Acknowledgments
+
+sequoia-boost is an independent, from-scratch **reimplementation of
+[XGBoost](https://github.com/dmlc/xgboost)** (Copyright the XGBoost Contributors,
+Apache-2.0) in Rust. It reimplements XGBoost's algorithms from their public
+descriptions and papers and contains no XGBoost source code. "XGBoost" is used
+descriptively to indicate algorithmic lineage and result compatibility; this
+project is not affiliated with or endorsed by the XGBoost project. See
+[`NOTICE`](NOTICE).
+
 ## License
 
-Apache-2.0.
+Licensed under the **Apache License, Version 2.0** — see [`LICENSE`](LICENSE) and
+[`NOTICE`](NOTICE).

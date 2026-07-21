@@ -1,0 +1,26 @@
+sequoia-boost
+Copyright 2026 pgarrett-scripps
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use
+these files except in compliance with the License. A copy of the License is
+provided in the LICENSE file.
+
+------------------------------------------------------------------------------
+
+Attribution
+
+sequoia-boost is an independent, from-scratch reimplementation of the XGBoost
+gradient boosting library in Rust:
+
+    XGBoost — https://github.com/dmlc/xgboost
+    Copyright the XGBoost Contributors
+    Licensed under the Apache License, Version 2.0
+
+sequoia-boost reimplements XGBoost's algorithms (the regularized second-order
+boosting objective, exact/approx/histogram tree construction, objectives,
+metrics, constraints, DART, gblinear, and TreeSHAP) from their public
+descriptions and papers. It does not incorporate XGBoost's source code.
+
+"XGBoost" is used only descriptively — to indicate algorithmic lineage and
+result compatibility — and is a name of the DMLC / XGBoost project, not of this
+crate. This project is not affiliated with or endorsed by the XGBoost project.
