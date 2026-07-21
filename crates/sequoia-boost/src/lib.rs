@@ -47,8 +47,8 @@ pub use config::{
 pub use data::DMatrix;
 pub use error::{Result, SequoiaError};
 pub use learner::{
-    cv, train, train_with_eval, train_with_objective, BoostedModel, CvResult, ImportanceType,
-    TrainResult,
+    cv, train, train_with_custom_metric, train_with_eval, train_with_objective, BoostedModel,
+    CvResult, ImportanceType, TrainResult,
 };
 pub use metric::Metric;
 pub use objective::{CustomObjective, GradPair, Objective};

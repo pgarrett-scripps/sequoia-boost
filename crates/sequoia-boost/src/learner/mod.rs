@@ -8,4 +8,7 @@ mod train;
 
 pub use cv::{cv, CvResult};
 pub use model::{BoostedModel, ImportanceType};
-pub use train::{train, train_with_eval, train_with_objective, EvalSet, RoundEval, TrainResult};
+pub use train::{
+    train, train_with_custom_metric, train_with_eval, train_with_objective, EvalSet, RoundEval,
+    TrainResult,
+};

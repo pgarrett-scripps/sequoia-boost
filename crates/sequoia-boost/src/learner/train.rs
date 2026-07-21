@@ -136,6 +136,33 @@ pub fn train_with_eval(
         evals,
         early_stopping_rounds,
         objective,
+        None,
+    )
+}
+
+/// Train with a user-supplied [`Metric`](crate::metric::Metric) (the
+/// custom-metric hook).
+///
+/// The supplied `metric` replaces the metrics that would otherwise be built
+/// from `eval_metric`/the objective default: it is the sole metric reported for
+/// each eval set and the one driving early stopping (per its `maximize`).
+pub fn train_with_custom_metric(
+    params: &TrainingParams,
+    dtrain: &DMatrix,
+    num_boost_round: usize,
+    evals: &[EvalSet],
+    early_stopping_rounds: Option<usize>,
+    metric: Box<dyn crate::metric::Metric>,
+) -> Result<TrainResult> {
+    let objective = create_objective(params)?;
+    train_impl(
+        params,
+        dtrain,
+        num_boost_round,
+        evals,
+        early_stopping_rounds,
+        objective,
+        Some(metric),
     )
 }
 
@@ -147,7 +174,7 @@ pub fn train_with_objective(
     num_boost_round: usize,
     objective: Box<dyn crate::objective::Objective>,
 ) -> Result<BoostedModel> {
-    Ok(train_impl(params, dtrain, num_boost_round, &[], None, objective)?.model)
+    Ok(train_impl(params, dtrain, num_boost_round, &[], None, objective, None)?.model)
 }
 
 /// The core boosting loop, generic over single- and multi-output objectives.
@@ -163,6 +190,7 @@ fn train_impl(
     evals: &[EvalSet],
     early_stopping_rounds: Option<usize>,
     objective: Box<dyn crate::objective::Objective>,
+    metric_override: Option<Box<dyn crate::metric::Metric>>,
 ) -> Result<TrainResult> {
     params.validate()?;
 
@@ -201,11 +229,16 @@ fn train_impl(
         .map(|(d, _)| init_margin(d, base_margin, n_out))
         .collect();
 
-    let metrics = create_metrics(
-        &params.eval_metric,
-        objective.default_metric(),
-        params.num_class,
-    )?;
+    // A caller-supplied metric replaces the configured/default metric list;
+    // otherwise build metrics exactly as before.
+    let metrics = match metric_override {
+        Some(m) => vec![m],
+        None => create_metrics(
+            &params.eval_metric,
+            objective.default_metric(),
+            params.num_class,
+        )?,
+    };
 
     let mut gpair = vec![GradPair::default(); n * n_out];
     // Per-output gradient buffer reused across classes (single-output aliases it).
@@ -996,6 +1029,71 @@ mod tests {
         // With per-node sampling active, the fitted model must differ.
         let differs = full.iter().zip(&sampled).any(|(a, b)| (a - b).abs() > 1e-6);
         assert!(differs, "colsample_bynode had no effect on the model");
+    }
+
+    #[test]
+    fn custom_metric_matches_builtin_rmse_early_stopping() {
+        use crate::metric::CustomMetric;
+        let d = step_dataset(80);
+        let params = TrainingParams::builder()
+            .objective("reg:squarederror")
+            .max_depth(3)
+            .eta(0.3)
+            .build()
+            .unwrap();
+
+        // Builtin path: default `rmse` metric drives early stopping.
+        let builtin = train_with_eval(&params, &d, 200, &[(&d, "train")], Some(5)).unwrap();
+
+        // Custom path: a CustomMetric reimplementing RMSE (minimize).
+        let rmse_metric = CustomMetric::new("rmse", false, |preds, labels, weights| {
+            let mut sq = 0.0f64;
+            let mut wsum = 0.0f64;
+            for i in 0..preds.len() {
+                let w = weights.map_or(1.0, |ws: &[f32]| ws[i] as f64);
+                let diff = preds[i] as f64 - labels[i] as f64;
+                sq += w * diff * diff;
+                wsum += w;
+            }
+            if wsum > 0.0 {
+                (sq / wsum).sqrt()
+            } else {
+                0.0
+            }
+        });
+        let custom = train_with_custom_metric(
+            &params,
+            &d,
+            200,
+            &[(&d, "train")],
+            Some(5),
+            Box::new(rmse_metric),
+        )
+        .unwrap();
+
+        // Early stopping fired identically, so the two models match tree-for-tree.
+        assert_eq!(
+            builtin.model.num_trees(),
+            custom.model.num_trees(),
+            "custom-metric early stopping diverged from builtin rmse"
+        );
+        assert_eq!(
+            builtin.model.best_iteration(),
+            custom.model.best_iteration()
+        );
+        let pb = builtin.model.predict(&d).unwrap();
+        let pc = custom.model.predict(&d).unwrap();
+        for (a, b) in pb.iter().zip(&pc) {
+            assert!((a - b).abs() < 1e-6, "{a} vs {b}");
+        }
+
+        // The custom metric was actually recorded in the history.
+        let names: Vec<&str> = custom.history[0]
+            .scores
+            .iter()
+            .map(|(_, m, _)| m.as_str())
+            .collect();
+        assert_eq!(names, vec!["rmse"]);
     }
 
     #[test]
