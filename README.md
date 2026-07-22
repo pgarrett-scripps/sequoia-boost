@@ -1,16 +1,24 @@
 # sequoia-boost
 
+[![crates.io](https://img.shields.io/crates/v/sequoia-boost.svg)](https://crates.io/crates/sequoia-boost)
+[![docs.rs](https://img.shields.io/docsrs/sequoia-boost)](https://docs.rs/sequoia-boost)
+[![CI](https://github.com/pgarrett-scripps/sequoia-boost/actions/workflows/ci.yml/badge.svg)](https://github.com/pgarrett-scripps/sequoia-boost/actions/workflows/ci.yml)
+[![license](https://img.shields.io/crates/l/sequoia-boost.svg)](LICENSE)
+
 A faithful, fast, pure-Rust reimplementation of [XGBoost](https://github.com/dmlc/xgboost)
-gradient boosting.
+gradient boosting — no C/C++ dependency, no FFI.
 
 `sequoia-boost` re-implements XGBoost's algorithms from scratch in idiomatic
-Rust — the regularized second-order boosting objective, exact and histogram tree
-construction, a broad objective/metric catalog, monotone constraints, and native
-model persistence — with multi-core (`rayon`) and SIMD-friendly acceleration.
+Rust — the regularized second-order boosting objective; exact, histogram, and
+approximate tree construction; the full objective/metric catalog; monotone and
+interaction constraints; categorical splits; DART and gblinear boosters;
+TreeSHAP; and XGBoost-format model interop — with multi-core (`rayon`)
+acceleration.
 
-> **Status:** early but functional. The core training/prediction paths are
-> implemented and tested; some advanced features are still in progress (see
-> [Feature status](#feature-status)).
+Objective, metric, and parameter names mirror XGBoost, so configurations
+transfer directly.
+
+> Using AI coding agents? See [`AGENTS.md`](AGENTS.md) for a task-oriented guide.
 
 ## Quick start
 
@@ -40,6 +48,23 @@ fn main() -> Result<()> {
     Ok(())
 }
 ```
+
+## Examples
+
+Runnable, self-contained examples live in
+[`crates/sequoia-boost/examples/`](crates/sequoia-boost/examples). Run any with
+`cargo run --release --example <name>`:
+
+| Example | Shows |
+|---|---|
+| `binary_classification` | `binary:logistic`, watched eval set, early stopping, AUC |
+| `multiclass` | `multi:softprob`, per-class probabilities, `predict_class` |
+| `ranking` | LambdaMART `rank:ndcg` over query groups |
+| `shap` | `predict_contribs` and `predict_interactions` (TreeSHAP) |
+| `model_io` | native binary / JSON and XGBoost-format model save & load |
+| `custom_objective` | custom loss and custom eval-metric hooks |
+| `constraints` | monotone + interaction constraints and categorical features |
+| `train_regression` | end-to-end regression with feature importance |
 
 ## Feature status
 

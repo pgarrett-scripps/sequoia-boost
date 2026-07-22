@@ -38,3 +38,6 @@ gpu = []
 [[bench]]
 name = "training"
 harness = false
+
+[package.metadata.docs.rs]
+all-features = true
