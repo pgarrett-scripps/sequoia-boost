@@ -18,6 +18,14 @@ acceleration.
 Objective, metric, and parameter names mirror XGBoost, so configurations
 transfer directly.
 
+> **Built by AI.** The implementation was written by **Claude** (Anthropic's AI
+> coding assistant), directed and reviewed by Patrick Garrett. It is **AI-generated
+> code**: it is covered by unit, property, and doc tests plus CI-checked XGBoost
+> model-quality parity, but it may still contain bugs, subtle numerical errors, or
+> wrong edge-case behavior. **Review and validate it for your own use case;
+> provided as-is, without warranty** (see [LICENSE](LICENSE)). Issue reports and
+> fixes are welcome.
+
 > Using AI coding agents? See [`AGENTS.md`](AGENTS.md) for a task-oriented guide.
 
 ## Quick start
@@ -161,6 +169,12 @@ Numerical parity against upstream XGBoost is checked by a fixture harness:
 `scripts/gen_fixtures.py` trains real `xgboost` across objectives and exports
 predictions to `fixtures/`; the ignored integration test `tests/parity.rs`
 asserts `sequoia-boost` matches within tolerance. See `scripts/README.md`.
+
+## Authorship
+
+Written by **Claude** (Anthropic's AI coding assistant), directed and reviewed
+by **Patrick Garrett**. See [`NOTICE`](NOTICE). Because it is AI-generated, treat
+it with appropriate scrutiny — it is tested and parity-checked but not warranted.
 
 ## Acknowledgments
 

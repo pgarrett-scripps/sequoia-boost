@@ -4,6 +4,10 @@ Context for automated agents working with **sequoia-boost**, a faithful,
 pure-Rust reimplementation of XGBoost gradient boosting (no C/C++, no FFI).
 Human docs: `README.md` and [docs.rs](https://docs.rs/sequoia-boost).
 
+> This codebase was itself written by Claude (Anthropic) under human direction.
+> It is tested and XGBoost-parity-checked in CI but may contain bugs — verify
+> changes with `cargo test`/`cargo clippy` and don't assume unlisted behavior.
+
 ## Using it as a dependency
 
 ```toml
