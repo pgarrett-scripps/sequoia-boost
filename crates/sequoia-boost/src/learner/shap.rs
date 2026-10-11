@@ -66,7 +66,7 @@ fn inv(n: usize) -> f64 {
 }
 
 /// `n as f64` for path positions. Going through `i64` lets the compiler emit a
-/// single signed conversion instead of the unsigned fix-up sequence; the value
+/// single signed conversion instead of the unsigned fix-up sequence. The value
 /// is identical for every `n` that fits.
 #[inline(always)]
 fn small_f64(n: usize) -> f64 {
@@ -174,7 +174,7 @@ fn add_hot_contributions(
 /// overlap the chains. The coefficient of `next_{i+1}` is gathered off the
 /// dependency chain so each step is one multiply-subtract. `one_fraction` is
 /// `1.0` for every hot element the traversal produces (it only ever carries the
-/// root's `1.0` forward), so the division is skipped; the result is identical.
+/// root's `1.0` forward), so the division is skipped with an identical result.
 fn hot_lanes<const N: usize>(
     path: &[PathElement],
     hot: &[usize; HOT_LANES],

@@ -268,8 +268,8 @@ mod tests {
     /// multiples of the chunk or of any vector block. The logistic case sweeps
     /// every short-tail residue r in 1..=15, where a separate final chunk
     /// would fall below the vector dispatch length and compute its rows on
-    /// the scalar path; the sweep also pins the structural invariant the fold
-    /// relies on — chunk boundaries stay multiples of every kernel block, so
+    /// the scalar path. The sweep also pins the structural invariant the fold
+    /// relies on: chunk boundaries stay multiples of every kernel block, so
     /// a uniform `chunk + tail` chunking would fail here.
     #[test]
     fn chunked_gradients_match_whole_batch() {

@@ -295,7 +295,7 @@ impl CompactForest {
         self.orig_id[id as usize]
     }
 
-    /// Leaves point at themselves; children are laid out after their parent,
+    /// Leaves point at themselves. Children are laid out after their parent,
     /// so no internal node does. (A leaf's key is also [`LEAF_KEY`], but an
     /// internal `+inf` threshold shares that key, so it is not the test.)
     #[inline]
@@ -340,8 +340,8 @@ impl CompactForest {
 
     /// `(slot, key)` of a node. On x86-64 the lockstep kernel is bound by
     /// load-port throughput, so both fields are fetched with one 64-bit load
-    /// (a load per lane and level saved); other architectures, which were
-    /// tuned with plain field loads, keep them.
+    /// (a load per lane and level saved). Other architectures, which were
+    /// tuned with plain field loads, keep the separate loads.
     #[inline(always)]
     fn slot_key(node: &CNode) -> (usize, u32) {
         #[cfg(target_arch = "x86_64")]

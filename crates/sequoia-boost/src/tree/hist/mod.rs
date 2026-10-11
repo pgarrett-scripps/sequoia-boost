@@ -280,8 +280,8 @@ fn accumulate_columns<B: BinIndex>(
 /// Column-wise accumulation of the rows in `range` for one feature whose
 /// global bins start at `first_bin`, into that feature's histogram `slice`.
 /// Bins in a column are global indices, so the slice is indexed relative to
-/// `first_bin`; the subtraction is unchecked — the binned-index invariant
-/// guarantees every bin of this feature's column is at least `first_bin`, and
+/// `first_bin`. The subtraction is unchecked because the binned-index
+/// invariant guarantees every bin of this feature's column is at least `first_bin`, and
 /// the slice index bounds check catches any violation.
 #[inline(always)]
 fn accumulate_column<B: BinIndex>(

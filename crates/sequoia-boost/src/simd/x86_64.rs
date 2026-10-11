@@ -1,5 +1,5 @@
 //! AVX2/FMA kernels for x86-64. The split-gain scan is a pure prefilter whose
-//! accepted result is bit-identical to the scalar path it replaces; the
+//! accepted result is bit-identical to the scalar path it replaces. The
 //! transcendental kernels mirror the NEON formulas and stay within a few f32
 //! ULPs of the scalar library functions.
 
@@ -496,7 +496,7 @@ unsafe fn normal_positive(values: __m256d) -> __m256d {
 ///
 /// The prefix sums advance bin by bin in scalar-identical order. Four
 /// candidates at a time are tested with the division-free bound
-/// `a_L·b_R + a_R·b_L > target·b_L·b_R` (`a = Tα(G)²`, `b = H + λ ≥ 0`); only
+/// `a_L·b_R + a_R·b_L > target·b_L·b_R` (`a = Tα(G)²`, `b = H + λ ≥ 0`). Only
 /// lanes that pass go through the exact scalar acceptance, so the returned
 /// candidate matches the scalar scan exactly. Callers must ensure
 /// `reg.max_delta_step == 0` (closed-form gain) and AVX2+FMA support.

@@ -44,12 +44,12 @@ All notable changes to `sequoia-boost` are documented here. The format follows
   unwound sum for off-path elements, and row-parallel evaluation.
 - Compare prediction splits on monotone `u32` keys (NaN maps to the missing
   direction, mirrored nodes read a precomputed negated key) loaded together
-  with the node's feature slot in one 64-bit load; batch prediction is
-  25–35% faster with identical results.
+  with the node's feature slot in one 64-bit load. Batch prediction is
+  25 to 35% faster with identical results.
 - Build the two children's split evaluations concurrently on large nodes and
   reduce partial histograms in parallel by bin range, keeping the per-bin
   addition order. Root histograms over contiguous row ranges are built
-  column-wise with one writer per feature; sibling partitions are written into
+  column-wise with one writer per feature, and sibling partitions are written into
   spare capacity instead of zero-filled buffers.
 - Compute built-in row-independent gradients (squared error, logistic, softmax)
   over fixed row chunks in parallel, bit-identical to the whole-batch result.
@@ -60,9 +60,9 @@ All notable changes to `sequoia-boost` are documented here. The format follows
 ### Fixed
 
 - Make the AArch64 NEON dense split scan bit-identical to the scalar scan. Its
-  vector prefilter compared a bound that could overflow to infinity — where
-  `inf > inf` reads false — or round subnormal, silently dropping candidates
-  the scalar scan accepts; the prefilter now saturates its bound and routes
+  vector prefilter compared a bound that could overflow to infinity (where
+  `inf > inf` reads false) or round to a subnormal, silently dropping
+  candidates the scalar scan accepts. The prefilter now saturates its bound and routes
   subnormal products and intermediates to the exact check. Surviving
   candidates are also accepted with the scalar `calc_gain` arithmetic, which
   scores zero-Hessian children with a zero gain instead of rejecting them, so

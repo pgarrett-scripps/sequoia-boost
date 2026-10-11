@@ -295,7 +295,7 @@ const DENOMINATOR_FLOOR_SCALE: f64 = 1.0e-307;
 /// First denominator (`b_L`) that keeps the `target · b_L` intermediate above
 /// [`DENOMINATOR_FLOOR_SCALE`]. With `lambda` large enough to cover it on its
 /// own, every acceptable candidate has `b_L = H_L + lambda >= lambda`, so
-/// `lambda` itself is the floor; otherwise the floor divides out `target`.
+/// `lambda` itself is the floor. Otherwise the floor divides out `target`.
 #[inline]
 fn denominator_floor(target: f64, lambda: f64) -> f64 {
     if target * lambda >= DENOMINATOR_FLOOR_SCALE {
@@ -473,9 +473,9 @@ unsafe fn gain_terms<const L1: bool>(
 /// and the first denominator must stay at or above `min_denominator` (a
 /// subnormal `target · b_L` intermediate corrupts an otherwise normal bound).
 /// Lanes that fail a guard are reported as improving, so they merely pay for
-/// the exact check; a `b_L <= 0` lane can only produce a bound at or below
-/// zero, which fails the floor and reaches the exact check, which scores such
-/// children with the scalar scan's zero gain.
+/// the exact check. A `b_L <= 0` lane can only produce a bound at or below
+/// zero, which fails the floor and reaches the exact check, and that check
+/// scores such children with the scalar scan's zero gain.
 #[inline]
 #[target_feature(enable = "neon")]
 unsafe fn improving_mask(terms: &PairTerms, target: f64, min_denominator: f64) -> uint64x2_t {
