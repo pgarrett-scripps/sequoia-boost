@@ -20,18 +20,6 @@ All notable changes to `sequoia-boost` are documented here. The format follows
   summation order.
 - Kernel and tree-building benchmarks with reproducible comparisons and
   [documented results](docs/performance.md).
-- Benchmark charts in the [performance guide](docs/performance.md): XGBoost
-  speedup and fit time by thread count, plus scalar-baseline time cuts for
-  full training, tree builds, and pointwise gradients, transforms, and
-  metrics. The SVGs are rendered by `docs/benchmarks/charts.gp` from
-  `docs/benchmarks/xgboost.dat` and `docs/benchmarks/optimization.dat`.
-
-- `autoresearch.sh`: the canonical benchmark entrypoint. It builds the
-  deterministic training and inference workload in
-  `examples/autoresearch_bench.rs` (dense, wide, binary, multiclass, and
-  sparse/missing training; batch prediction; TreeSHAP), runs the test suite
-  as a correctness guard, and reports one `METRIC` line per workload across
-  thread counts.
 
 ### Changed
 

@@ -47,16 +47,8 @@ workload, so the differences reflect training speed, not fit quality. Treat
 small differences as near parity given the uncontrolled background activity on
 this workstation.
 
-![sequoia-boost speedup over XGBoost 3.4.1 by workload and thread count](benchmarks/xgboost-speedup.svg)
-
-![Median fit time by workload and thread count, log scale](benchmarks/xgboost-threads.svg)
-
-The charts in this guide are rendered by
-[`benchmarks/charts.gp`](benchmarks/charts.gp) from the table values recorded
-in [`benchmarks/xgboost.dat`](benchmarks/xgboost.dat) and
-[`benchmarks/optimization.dat`](benchmarks/optimization.dat). Regenerate
-them with `gnuplot -c docs/benchmarks/charts.gp` after updating a data
-file. The data files also carry the measurement provenance for each chart.
+Raw result files and charts are not committed to the repository. Regenerate
+them with the scripts described in [`scripts/README.md`](../scripts/README.md).
 
 ### CPU scheduling
 
@@ -119,7 +111,7 @@ as near parity rather than an isolated-machine result.
 For each workload and thread count, batches run in
 XGBoost/sequoia/sequoia/XGBoost order. Each batch discards one warmup fit and
 records three fits. The table uses the median of all six recorded fits per
-engine. The [complete results](benchmarks/xgboost.json) include every sample,
+engine. The complete results written by `scripts/bench_xgb.py` include every sample,
 minimum/maximum times, held-out scores, native build configuration, dataset and
 source hashes, and the executable hash. These numbers describe this CPU and
 these synthetic workloads; they do not establish GPU or other-platform
@@ -177,8 +169,6 @@ tree construction, and training-prediction updates.
 | Binary classification | 1 | 408.616 | 114.892 | 71.9% |
 | Binary classification | 4 | 396.398 | 57.560 | 85.5% |
 
-![Full-training time cut vs scalar baseline](benchmarks/training-optimization.svg)
-
 ### Single histogram tree
 
 Cuts, binned data, and gradients are prepared outside the timer. These cases
@@ -209,8 +199,6 @@ has an increasing constraint in the monotone case. All cases use 256 bins.
 Loss-guide growth uses a 64-leaf limit; depthwise growth stops at its configured
 depth.
 
-![Histogram tree-build time cut vs scalar baseline](benchmarks/tree-optimization.svg)
-
 ### Numerical kernels
 
 Pointwise cases process one million predictions. Multiclass cases contain
@@ -218,12 +206,6 @@ Pointwise cases process one million predictions. Multiclass cases contain
 Transforms include copying the input into the reusable output buffer. Metrics
 include final normalization. These single-thread measurements use prepared
 inputs, not tree training.
-
-![Objective gradient time cut vs scalar baseline](benchmarks/gradient-optimization.svg)
-
-![Prediction transform time cut vs scalar baseline](benchmarks/transform-optimization.svg)
-
-![Metric time cut vs scalar baseline](benchmarks/metric-optimization.svg)
 
 | Workload | Threads | Baseline (ms) | Optimized (ms) | Less time |
 |---|---:|---:|---:|---:|
@@ -256,13 +238,13 @@ inputs, not tree training.
 | Multiclass log loss, 32 classes, weighted | 1 | 0.102 | 0.062 | 39.5% |
 | Multiclass error, 32 classes, weighted | 1 | 1.616 | 0.244 | 84.9% |
 
-The [complete results](benchmarks/performance.json) include all 73
+The complete results written by `scripts/compare_benchmarks.py` include all 73
 single-thread cases and 11 four-thread cases, including unweighted metrics,
 additional class counts, and histogram-accumulation controls. Histogram
 accumulation controls exercise the scalar accumulation loop and task scheduling;
 tree construction also measures split evaluation, parallel nodes, and avoiding
 unnecessary child work. The
-[compressed samples](benchmarks/performance-samples.json.gz) contain Criterion
+compressed samples (`samples.json.gz`) contain Criterion
 estimates, confidence intervals, raw samples, logs, the shared benchmark source,
 lockfile, and a patch that reconstructs the measured optimized source. The
 result file records executable and source SHA-256 hashes.
@@ -408,54 +390,20 @@ suite on the current checkout:
 RAYON_NUM_THREADS=1 cargo bench --locked -p sequoia-boost --bench training
 ```
 
-To regenerate the charts in this guide from the `.dat` files after updating
-the tables, run:
-
-```sh
-gnuplot -c docs/benchmarks/charts.gp
-```
-
-For an exact source comparison, reconstruct both trees from the recorded
-baseline revision and source archive. Run from the repository root:
+To compare two source trees, build the `training` bench executable in each
+checkout (for example the baseline revision and this branch, each in its own
+`git worktree`) and point the comparison runner at both. Run from the
+repository root:
 
 ```sh
 export BENCH_WORKDIR="$(mktemp -d)"
-uv run python - <<'PY'
-import gzip
-import io
-import json
-import os
-from pathlib import Path
-import subprocess
-import tarfile
-
-root = Path(os.environ['BENCH_WORKDIR'])
-record = json.loads(gzip.decompress(
-    Path('docs/benchmarks/performance-samples.json.gz').read_bytes()))['source']
-archive = subprocess.check_output(['git', 'archive', record['baseline_revision']])
-for name in ['baseline', 'optimized']:
-    tree = root / name
-    tree.mkdir()
-    with tarfile.open(fileobj=io.BytesIO(archive)) as source:
-        source.extractall(tree, filter='data')
-    if name == 'optimized':
-        subprocess.run(['git', 'apply', '--no-index', '-'], cwd=tree,
-                       input=record['optimized_patch'].encode(), check=True)
-    (tree / 'Cargo.lock').write_text(record['lockfile'])
-    (tree / 'crates/sequoia-boost/benches/training.rs').write_text(
-        record['benchmark_source'])
-    build = subprocess.check_output([
-        'cargo', '+1.98.1', 'bench', '--locked', '--no-run',
-        '-p', 'sequoia-boost', '--bench', 'training', '--message-format=json',
-    ], cwd=tree, env=dict(os.environ,
-                         CARGO_TARGET_DIR=str(root / f'{name}-target')))
-    artifacts = [json.loads(line) for line in build.splitlines()]
-    executable = next(Path(item['executable']) for item in artifacts
-                      if item.get('reason') == 'compiler-artifact'
-                      and item['target']['name'] == 'training'
-                      and item.get('executable'))
-    (root / f'{name}-bench').symlink_to(executable)
-PY
+for name in baseline optimized; do
+  # check out the tree to measure at "$BENCH_WORKDIR/$name" first
+  exe=$(cd "$BENCH_WORKDIR/$name" && cargo bench --locked --no-run \
+          -p sequoia-boost --bench training --message-format=json \
+        | jq -r 'select(.reason=="compiler-artifact" and .target.name=="training") | .executable // empty')
+  ln -s "$exe" "$BENCH_WORKDIR/$name-bench"
+done
 
 uv run python scripts/compare_benchmarks.py \
   --baseline "$BENCH_WORKDIR/baseline-bench" \
@@ -472,7 +420,7 @@ uv run python scripts/compare_benchmarks.py \
   --filter 'hist_tree_build|train_50k_x20_50rounds/Hist|train_binary_50k_x20_50rounds/automatic'
 ```
 
-The reconstruction snippet requires Python 3.12+ and Rust 1.98.1. Keep
+Keep
 `RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS`, `CARGO_BUILD_TARGET`, and Cargo profile
 overrides unset to match the recorded build. The comparison runner itself uses
 only the Python standard library. It creates separate Criterion directories
