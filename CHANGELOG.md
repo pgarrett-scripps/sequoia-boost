@@ -20,6 +20,11 @@ All notable changes to `sequoia-boost` are documented here. The format follows
   summation order.
 - Kernel and tree-building benchmarks with reproducible comparisons and
   [documented results](docs/performance.md).
+- Public API additions (no existing public item is removed or changed):
+  `GHistIndex::dense_stride` and `GHistIndex::column_bins` for the column-major
+  bin layout, `data::quantile::BinSearch` (`new`, `n_features`, `bin_of`) for
+  two-level cut search, and `RegTree::leaf_id_dense` for routing a dense row
+  without a closure.
 
 ### Changed
 
