@@ -1,0 +1,59 @@
+name: SIMD verify
+
+# Tests the branch on x86-64 and ARM64 runners and checks that its models
+# match master: identical leaf ids, prediction/SHAP differences within float
+# rounding, and bit-identical results at 1 and 4 threads. Also prints rough
+# master-vs-branch timings to the job summary.
+
+on:
+  push:
+    branches: [perf/arm64-pr1]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    name: verify (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: branch
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          path: master
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            branch
+            master
+      - name: CPU and SIMD kernel tests
+        working-directory: branch
+        run: |
+          uname -a
+          { command -v lscpu >/dev/null && lscpu | grep -iE 'model name|flags|features'; } \
+            || sysctl -n machdep.cpu.brand_string hw.optional.neon 2>/dev/null || true
+          cargo test --release --workspace -- --list 2>/dev/null | grep -E '^simd::' | sort > simd-tests.txt || true
+          echo "SIMD kernel tests compiled for this target: $(wc -l < simd-tests.txt) ($(grep -c '^simd::aarch64' simd-tests.txt || true) aarch64-only)"
+      - name: cargo test --release (unit, integration and doc tests)
+        working-directory: branch
+        run: cargo test --release --workspace
+      - name: Equivalence vs master and rough timing
+        run: bash branch/bench/verify/run.sh master branch verify-out
+      - name: Require NEON dispatch on ARM64
+        if: runner.arch == 'ARM64'
+        run: grep -q 'aarch64 NEON' verify-out/dispatch-branch.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: verify-${{ matrix.os }}
+          path: verify-out/report.md

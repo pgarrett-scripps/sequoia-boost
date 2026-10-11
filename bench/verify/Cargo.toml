@@ -1,0 +1,16 @@
+# Standalone verification harness (not a workspace member). It builds against
+# whatever `crates/sequoia-boost` sits two directories up, so the same files
+# can be copied into another checkout (e.g. master) to compare the two.
+[package]
+name = "sequoia-verify"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+sequoia-boost = { path = "../../crates/sequoia-boost" }
+
+[profile.release]
+debug = false
+
+[workspace]
