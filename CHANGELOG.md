@@ -6,6 +6,8 @@ All notable changes to `sequoia-boost` are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-12
+
 ### Added
 
 - Runtime-dispatched AArch64 NEON kernels for objective gradients, prediction
@@ -141,6 +143,7 @@ boosting.
 - Unit, property (`proptest`), and doc tests. XGBoost model-quality parity is
   verified in CI against real XGBoost.
 
-[Unreleased]: https://github.com/pgarrett-scripps/sequoia-boost/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/pgarrett-scripps/sequoia-boost/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/pgarrett-scripps/sequoia-boost/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/pgarrett-scripps/sequoia-boost/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/pgarrett-scripps/sequoia-boost/releases/tag/v0.1.0

@@ -30,8 +30,8 @@ repository-code: https://github.com/pgarrett-scripps/sequoia-boost
 url: https://docs.rs/sequoia-boost
 doi: 10.5281/zenodo.21968435
 license: Apache-2.0
-version: "0.2.0"
-date-released: "2026-08-16"
+version: "0.3.0"
+date-released: "2026-10-12"
 keywords:
   - gradient boosting
   - machine learning

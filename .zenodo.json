@@ -1,6 +1,6 @@
 {
   "title": "sequoia-boost",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "sequoia-boost is a pure Rust implementation of gradient boosted decision trees modeled on XGBoost's public algorithms and interfaces. It supports exact, histogram, and approximate tree construction, regression, classification, count models, ranking objectives, categorical features, missing values, monotone constraints, interaction constraints, DART, and linear boosters. Models provide early stopping, cross validation, feature importance, leaf prediction, TreeSHAP values, native serialization, and numeric-tree XGBoost JSON interoperability. Dense, sparse, CSV, and libsvm data are supported. The crate targets Rust applications that need CPU-based gradient boosting without C or C++ linkage. It requires Rust 1.86 or newer and uses Rayon for parallel histogram construction.",
   "creators": [
     {
